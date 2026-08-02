@@ -4,12 +4,14 @@
 // ?node=host:port query parameter because `vite dev` runs on its own origin.
 
 import {
+  ContractContainer,
   ContractKey,
   DelegateResponse,
   FreenetWsApi,
   GetRequest,
   GetResponse,
   HostError,
+  PutRequest,
   StateUpdate,
   SubscribeRequest,
   UpdateRequest,
@@ -142,9 +144,39 @@ export class FreenetClient {
     });
   }
 
+  /// The SDK matches GET responses to requests FIFO with no correlation
+  /// (freenet-core#5048); when responses can interleave, a mis-routed one
+  /// must fail loudly instead of feeding another contract's state to the
+  /// caller.
+  private checkResponseKey(requested: ContractKey, response: GetResponse): void {
+    const got = response.key?.bytes() ?? new Uint8Array();
+    if (got.length > 0 && bytesToHex(got) !== bytesToHex(requested.bytes())) {
+      throw new Error("mis-routed GET response (freenet-core#5048); retrying");
+    }
+  }
+
   async getState(key: ContractKey): Promise<Uint8Array> {
     const response = await this.api.get(new GetRequest(key, false));
+    this.checkResponseKey(key, response);
     return Uint8Array.from(response.state);
+  }
+
+  /// GET that also fetches the contract container (code + params), needed to
+  /// re-PUT a contract the node has dropped from the update mesh.
+  async getStateWithContract(
+    key: ContractKey,
+  ): Promise<{ state: Uint8Array; contract: ContractContainer }> {
+    const response = await this.api.get(new GetRequest(key, true));
+    this.checkResponseKey(key, response);
+    if (!response.contract) {
+      throw new Error("node returned no contract code with the state");
+    }
+    return { state: Uint8Array.from(response.state), contract: response.contract };
+  }
+
+  /// Full-state PUT (upsert): peers holding state re-validate and merge it.
+  async putState(contract: ContractContainer, state: Uint8Array): Promise<void> {
+    await this.api.put(new PutRequest(contract, Array.from(state)));
   }
 
   async updateWithDelta(key: ContractKey, delta: Uint8Array): Promise<void> {

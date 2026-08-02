@@ -141,6 +141,13 @@ app.innerHTML = `
           cooldown.
         </p>
       </section>
+      <button class="faq-button" data-testid="btn-onboarding-dismiss">
+        Watch the canvas for now
+      </button>
+      <p class="muted">
+        Admission keeps running in the background; you can browse the board
+        and chat history meanwhile. Click the canvas to come back here.
+      </p>
     </div>
   </div>
   <div class="overlay hidden" data-testid="faq">
@@ -235,6 +242,12 @@ const chatUnread = el("chat-unread");
 
 el("btn-faq").addEventListener("click", () => faqEl.classList.remove("hidden"));
 el("btn-faq-close").addEventListener("click", () => faqEl.classList.add("hidden"));
+// Hide onboarding without stopping the grind or the admission retries; a
+// placement click reopens it (placePixel -> openOnboarding) and a successful
+// admission closes it for good.
+el("btn-onboarding-dismiss").addEventListener("click", () => {
+  onboardingEl.classList.add("hidden");
+});
 
 let selectedColor = 5;
 let cooldownUntil = 0;
@@ -951,6 +964,7 @@ async function startAdmission(): Promise<void> {
         }
       } catch (err) {
         ghostkeyStatus.textContent = `ghost key admission failed: ${String(err)}`;
+        toast(`ghost key admission failed: ${String(err)}`);
         ghostkeyButton.disabled = false;
       }
     })();
@@ -975,9 +989,11 @@ async function startAdmission(): Promise<void> {
       powStatus.textContent = `searching for a valid nonce (${message.tried.toLocaleString()} hashes)`;
     } else {
       powProgress.value = 100;
-      powStatus.textContent = "nonce found; admitting";
+      powStatus.textContent = "nonce found; admitting (can take a minute or two on a busy network)";
       backend.admitPow(message.nonce, nickname()).catch((err: unknown) => {
         powStatus.textContent = `admission failed: ${String(err)}`;
+        // Also surfaced as a toast so a dismissed onboarding still reports it.
+        toast(`admission failed: ${String(err)}`);
       });
     }
   };

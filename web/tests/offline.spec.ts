@@ -388,6 +388,26 @@ test("chat messages carry timestamps and own-message styling", async ({ page }) 
   expect(errors).toEqual([]);
 });
 
+test("onboarding can be dismissed to watch, and a placement click reopens it", async ({
+  page,
+}) => {
+  const errors = watchConsole(page);
+  // holdpow keeps the grind (and thus admission) pending indefinitely.
+  await page.goto("/?mock=1&holdpow=1");
+  await expect(page.getByTestId("conn-status")).toHaveText("connected");
+  const onboarding = page.getByTestId("onboarding");
+  await expect(onboarding).toBeVisible();
+
+  await page.getByTestId("btn-onboarding-dismiss").click();
+  await expect(onboarding).toBeHidden();
+
+  // Still unadmitted: clicking the board must bring onboarding back, not place.
+  await page.getByTestId("board").click({ position: { x: 200, y: 200 } });
+  await expect(onboarding).toBeVisible();
+
+  expect(errors).toEqual([]);
+});
+
 test("ghost key upgrade flips the tier and keeps the nickname", async ({ page }) => {
   const errors = watchConsole(page);
   await page.goto("/?mock=1&admitted=1&ghostkey=yes");

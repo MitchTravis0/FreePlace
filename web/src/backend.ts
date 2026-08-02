@@ -4,10 +4,11 @@
 // in-memory state for the offline Playwright tier and exposes injection hooks
 // so tests can simulate remote peers.
 
-import { ContractKey } from "@freenetorg/freenet-stdlib";
+import { ContractContainer, ContractKey } from "@freenetorg/freenet-stdlib";
 import { contractKeyFromId, FreenetClient } from "./freenet-api";
 import { GhostkeyOutcome, proveGhostkey } from "./ghostkey";
 import { IdentityClient } from "./identity";
+import { mergeChatState, mergeRegistryState, mergeTileState } from "./merge";
 import { leadingZeroBits, powDigest } from "./pow";
 import {
   applyRegistryDelta,
@@ -76,6 +77,106 @@ export function tileIndex(tileX: number, tileY: number): number {
 /// ~5 min (plan.md risks), making valid placements look rejected.
 const ADMISSION_LAG_RETRY_MS = 5 * 60_000;
 const UPDATE_RETRY_INTERVAL_MS = 5_000;
+// The TS SDK's request/response matching is arrival-order FIFO with no
+// correlation (freenet-core#5048): an update whose error response is
+// mis-routed leaves the promise pending forever. Every attempt gets a hard
+// timeout so retry loops keep moving and failures surface instead of
+// freezing the UI.
+const UPDATE_ATTEMPT_TIMEOUT_MS = 20_000;
+
+/// Reject after `ms` so one lost response cannot hang a retry loop.
+export function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (err: unknown) => {
+        clearTimeout(timer);
+        reject(err instanceof Error ? err : new Error(String(err)));
+      },
+    );
+  });
+}
+
+/// Merges a signed delta into full contract state bytes (see merge.ts).
+export type StateMerge = (state: Uint8Array, delta: Uint8Array) => Uint8Array;
+
+/// What updateOrPut needs from the connection layer (FreenetClient implements
+/// it; tests substitute fakes).
+export interface UpdateChannel {
+  updateWithDelta(key: ContractKey, delta: Uint8Array): Promise<void>;
+  getState(key: ContractKey): Promise<Uint8Array>;
+  getStateWithContract(
+    key: ContractKey,
+  ): Promise<{ state: Uint8Array; contract: ContractContainer }>;
+  putState(contract: ContractContainer, state: Uint8Array): Promise<void>;
+}
+
+/// Per-connection caches for the PUT fallback: fetched contract containers,
+/// and the keys whose UPDATE path already failed once (those go PUT-first, so
+/// e.g. pixel placements do not wait out a doomed 20s UPDATE every time).
+export interface PutFallbackCaches {
+  containers: Map<string, ContractContainer>;
+  putFirst: Set<string>;
+}
+
+/// One delivery attempt. UPDATE is the cheap, semantically-right primitive,
+/// but on the real network a low-traffic contract can drop out of the update
+/// mesh: every UPDATE fails with "missing contract" while GET and PUT keep
+/// working (freenet-core#5069; confirmed live 2026-08-01, even seconds after
+/// a successful re-PUT). The fallback fetches the current state (plus the
+/// contract container, cached), merges the delta locally, and re-PUTs the
+/// result; peers re-validate and CRDT-merge it, so this is safe and
+/// idempotent.
+export async function updateOrPut(
+  channel: UpdateChannel,
+  key: ContractKey,
+  delta: Uint8Array,
+  merge: StateMerge,
+  caches: PutFallbackCaches,
+): Promise<void> {
+  const keyHex = hex(key.bytes());
+  const doUpdate = () =>
+    withTimeout(channel.updateWithDelta(key, delta), UPDATE_ATTEMPT_TIMEOUT_MS, "contract update");
+  const doPut = async () => {
+    let container = caches.containers.get(keyHex);
+    let state: Uint8Array;
+    if (container === undefined) {
+      const got = await withTimeout(
+        channel.getStateWithContract(key),
+        UPDATE_ATTEMPT_TIMEOUT_MS,
+        "contract fetch",
+      );
+      container = got.contract;
+      caches.containers.set(keyHex, container);
+      state = got.state;
+    } else {
+      state = await withTimeout(channel.getState(key), UPDATE_ATTEMPT_TIMEOUT_MS, "state fetch");
+    }
+    await withTimeout(
+      channel.putState(container, merge(state, delta)),
+      UPDATE_ATTEMPT_TIMEOUT_MS,
+      "contract put",
+    );
+    caches.putFirst.add(keyHex);
+  };
+  if (caches.putFirst.has(keyHex)) {
+    try {
+      await doPut();
+    } catch {
+      await doUpdate();
+    }
+    return;
+  }
+  try {
+    await doUpdate();
+  } catch {
+    await doPut();
+  }
+}
 
 function nowTs(): number {
   return Math.floor(Date.now() / 1000);
@@ -112,6 +213,7 @@ export class RealBackend implements Backend {
   private myVk: Uint8Array = new Uint8Array();
   private chatSeq = { ts: 0, seq: 0 };
   private admittedAt: number | null = null;
+  private putFallback: PutFallbackCaches = { containers: new Map(), putFirst: new Set() };
   private disposed = false;
   /// instance-id hex -> route for subscription notifications.
   private routes = new Map<
@@ -347,7 +449,9 @@ export class RealBackend implements Backend {
   }
 
   private async sendRegistryDelta(delta: Uint8Array): Promise<void> {
-    await this.client.updateWithDelta(this.key("registry"), delta);
+    // Patient retries: the admission must land, and each attempt already
+    // carries the PUT fallback for a contract dropped from the update mesh.
+    await this.updateWithRetry(this.key("registry"), delta, mergeRegistryState, true);
     this.admittedAt = Date.now();
     // Optimistic: the subscription notification confirms, but a fresh
     // admission must unlock the UI immediately.
@@ -370,7 +474,7 @@ export class RealBackend implements Backend {
     // Optimistic local apply; the subscription notification reconciles.
     this.tiles[tileIndex(tileX, tileY)].applyDelta(decodeTileDelta(signed.delta));
     this.events.onTile(tileX, tileY);
-    await this.updateWithRetry(this.key("tile", tile), signed.delta);
+    await this.updateWithRetry(this.key("tile", tile), signed.delta, mergeTileState);
   }
 
   async sendChat(content: string): Promise<void> {
@@ -388,7 +492,7 @@ export class RealBackend implements Backend {
     );
     this.chat.applyDelta(decodeChatDelta(signed.delta));
     this.events.onChat();
-    await this.updateWithRetry(this.key("chat"), signed.delta);
+    await this.updateWithRetry(this.key("chat"), signed.delta, mergeChatState);
   }
 
   /// Nickname edits ride the registry's monotonic version counter. Unlike an
@@ -401,19 +505,31 @@ export class RealBackend implements Backend {
     // Optimistic; the subscription notification reconciles.
     applyRegistryDelta(this.registry, signed.delta);
     this.events.onRegistry();
-    await this.updateWithRetry(this.key("registry"), signed.delta);
+    await this.updateWithRetry(this.key("registry"), signed.delta, mergeRegistryState);
   }
 
   /// A fresh admission can take minutes to become visible to every peer's
   /// validate pass (rarely-changing-field lag, plan.md risks); within the lag
   /// window after admitting, keep retrying instead of surfacing a spurious
   /// rejection. Outside it, three quick attempts cover transient failures.
-  private async updateWithRetry(key: ContractKey, delta: Uint8Array): Promise<void> {
-    const lagDeadline = this.admittedAt === null ? 0 : this.admittedAt + ADMISSION_LAG_RETRY_MS;
+  /// `patient` forces the full window regardless of admission state (used by
+  /// the admission update itself). Each attempt is UPDATE with a PUT-merged-
+  /// state fallback (updateOrPut), hard-timed-out per step (#5048).
+  private async updateWithRetry(
+    key: ContractKey,
+    delta: Uint8Array,
+    merge: StateMerge,
+    patient = false,
+  ): Promise<void> {
+    const lagDeadline = patient
+      ? Date.now() + ADMISSION_LAG_RETRY_MS
+      : this.admittedAt === null
+        ? 0
+        : this.admittedAt + ADMISSION_LAG_RETRY_MS;
     let lastError: unknown;
     for (let attempt = 0; ; attempt++) {
       try {
-        await this.client.updateWithDelta(key, delta);
+        await updateOrPut(this.client, key, delta, merge, this.putFallback);
         return;
       } catch (err) {
         lastError = err;

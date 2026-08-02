@@ -12,6 +12,7 @@ web/test-results/
 web/playwright-report/
 # Build-time key/id injections written by the publish tooling
 web/.gen/
+intro.png
 
 # WASM belongs only in published-contract/ (enforced by .githooks/pre-commit)
 *.wasm

@@ -194,7 +194,15 @@ FACADE_ID=$(contract_id "$FACADE_WASM" "$BUILD/facade-params.bin")
 
 if [ -n "${OLD_FACADE_ID:-}" ] && [ "$OLD_FACADE_ID" = "$FACADE_ID" ]; then
   echo "== flipping the facade pointer at $FACADE_ID"
-  fdev -p "$PORT" execute update --as-state "$FACADE_ID" "$BUILD/facade-state.bin"
+  if ! fdev -p "$PORT" execute update --as-state "$FACADE_ID" "$BUILD/facade-state.bin"; then
+    # Real-network UPDATEs can fail with "missing contract" while the
+    # contract is out of the update mesh (freenet-core#5069). A re-PUT with
+    # the new signed state flips the pointer just as well: the facade merges
+    # LWW on (version, signature), so the higher-versioned state wins.
+    echo "== pointer UPDATE failed; falling back to a re-PUT of the facade"
+    fdev -p "$PORT" publish --code "$FACADE_WASM" --parameters "$BUILD/facade-params.bin" \
+      contract --webapp-archive "$BUILD/loader.tar.xz" --webapp-metadata "$BUILD/facade-meta.bin"
+  fi
 else
   echo "== publishing the facade (stable URL) at $FACADE_ID"
   publish_contract "$FACADE_WASM" "$BUILD/facade-params.bin" \
@@ -208,6 +216,13 @@ for cache in "$HOME/.cache/freenet/webapp_cache" \
   rm -rf "$cache/$FACADE_ID" "$cache/$FACADE_ID.hash" 2>/dev/null || true
 done
 curl -s -o /dev/null "http://127.0.0.1:$PORT/v1/contract/web/$FACADE_ID/" || true
+
+# Verify the stable URL actually serves this release's pointer; a silently
+# stale pointer must fail the release before the manifest is written.
+if ! curl -s "http://127.0.0.1:$PORT/v1/contract/web/$FACADE_ID/loader.js" | grep -q "$WEBAPP_ID"; then
+  echo "FAIL: facade loader does not reference $WEBAPP_ID (pointer flip did not land)"
+  exit 1
+fi
 
 # ---- manifest (written last, so a failed release leaves the old one) -------
 

@@ -29,8 +29,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use common::constants::{FACADE_MAX_PREV_APPS, TILES_PER_SIDE};
 use common::facade::{encode_facade_frame, FacadeMetadata, FacadeParameters, FacadePointer};
 use common::registry::{
-    find_pow_nonce, AdmissionProof, AdmissionRecord, RegistryDelta, RegistryParameters,
-    RegistryState, SignedNickname,
+    find_pow_nonce, AdmissionProof, AdmissionRecord, NicknameUpdate, RegistryDelta,
+    RegistryParameters, RegistryState, SignedNickname,
 };
 use common::tile::{SignedPlacement, TileDelta, TileParameters, TileState};
 use common::to_cbor;
@@ -256,6 +256,203 @@ fn seed_identity() -> SigningKey {
     SigningKey::from_bytes(&[77; 32])
 }
 
+/// Ops tool for the PUT fallback (freenet-core#5069): merge a registry delta
+/// into fetched state bytes, producing the full state to re-PUT with
+/// `fdev publish ... contract --state <out>` when UPDATEs fail with
+/// "missing contract".
+fn apply_registry_delta(state_file: &Path, delta_file: &Path, out: &Path) {
+    let state_bytes = fs::read(state_file).expect("read state file");
+    let mut state: RegistryState = if state_bytes.is_empty() {
+        RegistryState::default()
+    } else {
+        common::from_cbor(&state_bytes).expect("state decodes as RegistryState")
+    };
+    let delta: RegistryDelta =
+        common::from_cbor(&fs::read(delta_file).expect("read delta file")).expect("decode delta");
+    state.apply_delta(&delta);
+    fs::write(out, to_cbor(&state)).expect("write merged state");
+    println!("merged state: {} identities", state.identities.len());
+}
+
+/// Cross-language lock for the UI's PUT-fallback state merge: for each
+/// contract kind, emit (state, delta, merged-by-Rust) byte fixtures. The TS
+/// merge in web/src/merge.ts must reproduce `merged` byte-for-byte
+/// (web/tests/merge.spec.ts).
+fn merge_fixtures(out: &Path) {
+    let key = |seed: u8| SigningKey::from_bytes(&[seed; 32]);
+    let reg_params = RegistryParameters { canvas_id: [7; 32] };
+    let tile_params = TileParameters {
+        canvas_id: [7; 32],
+        tile_x: 1,
+        tile_y: 2,
+        registry: [9; 32],
+    };
+    let chat_params = common::chat::ChatParameters {
+        canvas_id: [7; 32],
+        registry: [9; 32],
+    };
+
+    let pow = |seed: u8, ts: u64, nick: Option<(&str, u64)>| {
+        AdmissionRecord::sign(
+            &key(seed),
+            &reg_params,
+            AdmissionProof::Work { nonce: 42 },
+            nick.map(|(name, version)| {
+                SignedNickname::sign(&key(seed), &reg_params, name, version)
+            }),
+            ts,
+        )
+    };
+    let ghost = |seed: u8, ts: u64| {
+        AdmissionRecord::sign(
+            &key(seed),
+            &reg_params,
+            AdmissionProof::Ghostkey {
+                scoped_payload: vec![1, 2],
+                signature: vec![3; 64],
+                certificate_pem: "PEM".to_string(),
+            },
+            None,
+            ts,
+        )
+    };
+    let registry_case = |name: &str, state: RegistryState, delta: RegistryDelta| {
+        let mut merged = state.clone();
+        merged.apply_delta(&delta);
+        fixture_entry(name, &to_cbor(&state), &to_cbor(&delta), &to_cbor(&merged))
+    };
+    let mut two = RegistryState::default();
+    two.insert_record(pow(1, 1000, Some(("nick", 1))));
+    two.insert_record(ghost(2, 2000));
+    let mut one = RegistryState::default();
+    one.insert_record(pow(1, 1000, Some(("nick", 1))));
+    let registry_cases = [
+        registry_case(
+            "empty-admit-pow",
+            RegistryState::default(),
+            RegistryDelta {
+                admissions: vec![pow(1, 1000, Some(("nick", 1)))],
+                nicknames: vec![],
+            },
+        ),
+        registry_case(
+            "add-and-nickname",
+            two,
+            RegistryDelta {
+                admissions: vec![pow(3, 1500, None)],
+                nicknames: vec![NicknameUpdate {
+                    identity_vk: key(1).verifying_key(),
+                    nickname: SignedNickname::sign(&key(1), &reg_params, "renamed", 2),
+                }],
+            },
+        ),
+        registry_case(
+            "earlier-core-wins-keeps-nickname",
+            one,
+            RegistryDelta {
+                admissions: vec![ghost(1, 500)],
+                nicknames: vec![],
+            },
+        ),
+    ];
+
+    let place = |seed: u8, coord: u16, color: u8, ts: u64| {
+        SignedPlacement::sign(&key(seed), &tile_params, coord, color, ts)
+    };
+    let tile_case = |name: &str, seeds: &[SignedPlacement], delta: Vec<SignedPlacement>| {
+        let mut state = TileState::default();
+        for p in seeds {
+            state.insert(*p);
+        }
+        let delta = TileDelta { placements: delta };
+        let mut merged = state.clone();
+        merged.apply_delta(&delta);
+        fixture_entry(name, &to_cbor(&state), &to_cbor(&delta), &to_cbor(&merged))
+    };
+    let full_log: Vec<SignedPlacement> = (0..8)
+        .map(|i| place(1, 100 + i, (i % 16) as u8, 10 + 10 * u64::from(i)))
+        .collect();
+    let tile_cases = [
+        tile_case(
+            "add-authors",
+            &[
+                place(1, 1, 2, 10),
+                place(1, 3, 4, 20),
+                place(2, 500, 15, 30),
+            ],
+            vec![place(2, 501, 6, 40), place(3, 5, 9, 5)],
+        ),
+        tile_case("cap-evicts-oldest", &full_log, vec![place(1, 200, 3, 90)]),
+        tile_case(
+            "same-ts-slot-conflict",
+            &[place(1, 1, 2, 10)],
+            vec![place(1, 7, 8, 10)],
+        ),
+    ];
+
+    let msg = |seed: u8, content: &str, ts: u64, seq: u32| {
+        common::chat::SignedMessage::sign(&key(seed), &chat_params, content, ts, seq)
+    };
+    let chat_case = |name: &str,
+                     seeds: Vec<common::chat::SignedMessage>,
+                     delta: Vec<common::chat::SignedMessage>| {
+        let mut state = common::chat::ChatState::default();
+        for m in seeds {
+            state.insert(m);
+        }
+        let delta = common::chat::ChatDelta { messages: delta };
+        let mut merged = state.clone();
+        merged.apply_delta(&delta);
+        fixture_entry(name, &to_cbor(&state), &to_cbor(&delta), &to_cbor(&merged))
+    };
+    let author_full: Vec<common::chat::SignedMessage> = (0u64..32)
+        .map(|i| msg(1, &format!("m{i}"), 100 + 10 * i, 0))
+        .collect();
+    let chat_cases = [
+        chat_case(
+            "add-message",
+            vec![
+                msg(1, "m1", 10, 0),
+                msg(2, "m2", 10, 0),
+                msg(1, "m3", 30, 0),
+            ],
+            vec![msg(3, "hello", 40, 1)],
+        ),
+        chat_case(
+            "author-cap-evicts-oldest",
+            author_full,
+            vec![msg(1, "newest", 900, 0)],
+        ),
+        chat_case(
+            "same-id-slot-conflict",
+            vec![msg(1, "aaa", 10, 0)],
+            vec![msg(1, "zzz", 10, 0)],
+        ),
+    ];
+
+    let section = |cases: &[String]| format!("[{}]", cases.join(","));
+    let json = format!(
+        "{{\"registry\":{},\"tile\":{},\"chat\":{}}}\n",
+        section(&registry_cases),
+        section(&tile_cases),
+        section(&chat_cases),
+    );
+    if let Some(parent) = out.parent() {
+        fs::create_dir_all(parent).expect("create fixture dir");
+    }
+    fs::write(out, json).expect("write merge fixtures");
+    println!("merge fixtures written to {}", out.display());
+}
+
+fn fixture_entry(name: &str, state: &[u8], delta: &[u8], merged: &[u8]) -> String {
+    format!(
+        "{{\"name\":\"{name}\",\"state\":\"{}\",\"delta\":\"{}\",\"merged\":\"{}\"}}",
+        hex_encode(state),
+        hex_encode(delta),
+        hex_encode(merged),
+    )
+}
+
 fn gen_seed(outdir: &Path, registry_params: &Path, tile_params: &Path) {
     fs::create_dir_all(outdir).expect("create output dir");
     let reg_params: RegistryParameters =
@@ -356,6 +553,10 @@ fn main() {
         Some("gen-seed") if args.len() == 5 => {
             gen_seed(Path::new(arg(2)), Path::new(arg(3)), Path::new(arg(4)));
         }
+        Some("merge-fixtures") if args.len() == 3 => merge_fixtures(Path::new(arg(2))),
+        Some("apply-registry-delta") if args.len() == 5 => {
+            apply_registry_delta(Path::new(arg(2)), Path::new(arg(3)), Path::new(arg(4)));
+        }
         Some("assert-tile-has") if args.len() == 5 => {
             assert_tile_has(
                 Path::new(arg(2)),
@@ -375,6 +576,8 @@ fn main() {
                  sign-facade <keyfile> <loader_tar> <version> <current_app_id> \
                  <params_out> <meta_out> <state_out> [prev_app_id...] | \
                  gen-seed <outdir> <registry_params> <tile_params> | \
+                 merge-fixtures <out_json> | \
+                 apply-registry-delta <state> <delta> <out> | \
                  assert-tile-has <statefile> <coord> <color>"
             );
             exit(2);
