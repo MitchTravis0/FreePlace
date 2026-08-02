@@ -7,7 +7,10 @@ use std::collections::BTreeMap;
 use ed25519_dalek::{Signature, SigningKey};
 use proptest::prelude::*;
 
-use crate::constants::{EMPTY_PIXEL, MAX_PLACEMENTS_PER_AUTHOR, TILE_AREA};
+use crate::constants::{
+    EMPTY_PIXEL, GHOSTKEY_TILE_COOLDOWN_SECS, MAX_PLACEMENTS_PER_AUTHOR, POW_TILE_COOLDOWN_SECS,
+    TILE_AREA,
+};
 use crate::identity::{AuthorId, Tier};
 use crate::tile::{
     placement_signing_bytes, serialize_delta, SignedPlacement, TileParameters, TileState,
@@ -205,8 +208,8 @@ proptest! {
 
 #[test]
 fn same_author_pair_inside_cooldown_converges_to_earliest() {
-    // PoW cooldown is 120s; two placements 5s apart. Whatever order peers see
-    // them in, only the earliest is valid on both.
+    // Two placements 5s apart, inside the PoW cooldown. Whatever order peers
+    // see them in, only the earliest is valid on both.
     let first = placement((0, 10, 3, 100));
     let second = placement((0, 11, 4, 105));
 
@@ -226,10 +229,11 @@ fn same_author_pair_inside_cooldown_converges_to_earliest() {
 
 #[test]
 fn cooldown_boundary_is_inclusive() {
-    // Ghost-key cooldown is 30s: exactly 30s later is accepted, 29s is not.
-    let state = state_from(&[(1, 0, 1, 100), (1, 1, 2, 130)]);
+    // Exactly one ghost-key cooldown later is accepted, one second less is not.
+    let g = GHOSTKEY_TILE_COOLDOWN_SECS;
+    let state = state_from(&[(1, 0, 1, 100), (1, 1, 2, 100 + g)]);
     assert_eq!(state.valid_placements(tier_of).len(), 2);
-    let state = state_from(&[(1, 0, 1, 100), (1, 1, 2, 129)]);
+    let state = state_from(&[(1, 0, 1, 100), (1, 1, 2, 100 + g - 1)]);
     assert_eq!(state.valid_placements(tier_of).len(), 1);
 }
 
@@ -321,11 +325,15 @@ fn baked_burst_stays_cooldown_filtered() {
         .collect();
     let state = state_from(&specs);
     assert_eq!(state.baked.values().map(|log| log.len()).sum::<usize>(), 20);
-    // All placements are 1s apart; the PoW cooldown is 120s, so only the
-    // earliest retained placement is visible, baked or not.
-    assert_eq!(state.valid_placements(tier_of).len(), 1);
+    // All placements are 1s apart and all of them are retained (live + baked),
+    // so the greedy chain accepts exactly one per PoW cooldown window.
+    let expected = (1 + (count as u64 - 1) / POW_TILE_COOLDOWN_SECS) as usize;
+    assert_eq!(state.valid_placements(tier_of).len(), expected);
     let canvas = state.derive_canvas(tier_of);
-    assert_eq!(canvas.iter().filter(|&&c| c != EMPTY_PIXEL).count(), 1);
+    assert_eq!(
+        canvas.iter().filter(|&&c| c != EMPTY_PIXEL).count(),
+        expected
+    );
     assert_eq!(canvas[0], 1);
 }
 

@@ -28,10 +28,12 @@ pub const MAX_PLACEMENTS_PER_AUTHOR: usize = 8;
 pub const MAX_BAKED_PER_AUTHOR: usize = 256;
 
 /// Per-tile cooldown for PoW-admitted identities, in seconds.
-pub const POW_TILE_COOLDOWN_SECS: u64 = 120;
+pub const POW_TILE_COOLDOWN_SECS: u64 = 20;
 
-/// Per-tile cooldown for ghost-key-admitted identities, in seconds.
-pub const GHOSTKEY_TILE_COOLDOWN_SECS: u64 = 30;
+/// Per-tile cooldown for ghost-key-admitted identities, in seconds. 2 is the
+/// floor: timestamps have 1-second resolution and the per-author log is keyed
+/// by ts, so anything lower collides same-second placements on the map key.
+pub const GHOSTKEY_TILE_COOLDOWN_SECS: u64 = 2;
 
 /// Placements timestamped further than this ahead of the host clock are
 /// invalid. There is deliberately no past-skew check (self-DoS on stored state).

@@ -85,6 +85,36 @@ const UPDATE_RETRY_INTERVAL_MS = 5_000;
 // timeout so retry loops keep moving and failures surface instead of
 // freezing the UI.
 const UPDATE_ATTEMPT_TIMEOUT_MS = 20_000;
+// On a fresh node the FIRST GET of a low-traffic contract can stall forever
+// node-side while still kicking off the network fetch; an immediate re-GET
+// then answers from local state in milliseconds (reproduced live
+// 2026-08-02, 4 of 16 tiles). So sync GETs use a short per-attempt timeout
+// and a few retries instead of trusting the SDK's single 30s wait.
+const SYNC_GET_TIMEOUT_MS = 15_000;
+const SYNC_GET_ATTEMPTS = 3;
+// Tiles that still fail after that keep retrying in the background so one
+// cold tile never blocks the whole app.
+const SYNC_RETRY_INTERVAL_MS = 10_000;
+
+/// GET with a per-attempt hard timeout and retries; null when every attempt
+/// failed. Mis-routed responses (checkResponseKey) and stalls both land in
+/// the catch, and the retry re-issues the request.
+export async function getWithRetry(
+  channel: Pick<UpdateChannel, "getState">,
+  key: ContractKey,
+  label: string,
+  attempts = SYNC_GET_ATTEMPTS,
+  timeoutMs = SYNC_GET_TIMEOUT_MS,
+): Promise<Uint8Array | null> {
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      return await withTimeout(channel.getState(key), timeoutMs, `${label} fetch`);
+    } catch (err) {
+      console.info(`freeplace sync: ${label} fetch attempt ${attempt}/${attempts} failed: ${err}`);
+    }
+  }
+  return null;
+}
 
 /// Reject after `ms` so one lost response cannot hang a retry loop.
 export function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
@@ -180,6 +210,20 @@ export async function updateOrPut(
   }
 }
 
+/// Fold a decoded full tile state into the render state, BOTH layers: live
+/// placements via insert (displacement bakes, as in tile.rs), baked entries
+/// straight into the baked layer (keep-newest-K idempotent merge). Copying
+/// only the live log made every baked pixel invisible to freshly-loading
+/// clients (latent since the baked layer shipped, found 2026-08-02).
+export function mergeTileInto(target: TileStateJs, decoded: TileStateJs): void {
+  for (const log of decoded.placements.values()) {
+    for (const placement of log.values()) target.insert(placement);
+  }
+  for (const log of decoded.baked.values()) {
+    for (const placement of log.values()) target.bake(placement);
+  }
+}
+
 function nowTs(): number {
   return Math.floor(Date.now() / 1000);
 }
@@ -221,6 +265,9 @@ export class RealBackend implements Backend {
   private admittedAt: number | null = null;
   private putFallback: PutFallbackCaches = { containers: new Map(), putFirst: new Set() };
   private delegateRegistered = false;
+  private pendingChat = false;
+  private pendingTiles: TileConfig[] = [];
+  private syncRetryTimer: number | null = null;
   private disposed = false;
   /// instance-id hex -> route for subscription notifications.
   private routes = new Map<
@@ -328,14 +375,24 @@ export class RealBackend implements Backend {
     key: ContractKey,
     legacyIds: string[],
     isEmpty: (bytes: Uint8Array) => boolean,
-  ): Promise<Uint8Array> {
-    const current = await this.client.getState(key);
+    attempts?: number,
+  ): Promise<Uint8Array | null> {
+    const current = await getWithRetry(this.client, key, label, attempts);
+    if (current === null) return null;
     if (!isEmpty(current) || legacyIds.length === 0) return current;
     for (const legacyId of legacyIds) {
       try {
-        const old = await this.client.getState(contractKeyFromId(legacyId));
+        const old = await withTimeout(
+          this.client.getState(contractKeyFromId(legacyId)),
+          SYNC_GET_TIMEOUT_MS,
+          `legacy ${label} fetch`,
+        );
         if (isEmpty(old)) continue;
-        await this.client.updateWithState(key, old);
+        await withTimeout(
+          this.client.updateWithState(key, old),
+          UPDATE_ATTEMPT_TIMEOUT_MS,
+          `${label} fold-forward`,
+        );
         console.info(`freeplace migration: carried ${label} state forward from ${legacyId}`);
         return old;
       } catch (err) {
@@ -345,55 +402,106 @@ export class RealBackend implements Backend {
     return current;
   }
 
+  /// One cold tile must never block the app: registry failure is fatal (the
+  /// admission gate is unusable without it), but chat and tiles that fail
+  /// their initial sync are queued and keep retrying in the background while
+  /// everything that did load is live.
   private async syncAll(): Promise<void> {
     const legacy = this.config.legacyIds;
     const registryKey = this.key("registry");
     this.routes.set(hex(registryKey.bytes()), { kind: "registry" });
-    this.registry = decodeRegistryState(
-      await this.getStateWithLegacyProbe(
-        "registry",
-        registryKey,
-        legacy.registry,
-        (bytes) => decodeRegistryState(bytes).identities.size === 0,
-      ),
+    const registryBytes = await this.getStateWithLegacyProbe(
+      "registry",
+      registryKey,
+      legacy.registry,
+      (bytes) => decodeRegistryState(bytes).identities.size === 0,
     );
-    await this.client.subscribe(registryKey);
+    if (registryBytes === null) throw new Error("registry unreachable (all attempts timed out)");
+    this.registry = decodeRegistryState(registryBytes);
+    await withTimeout(this.client.subscribe(registryKey), SYNC_GET_TIMEOUT_MS, "registry subscribe");
     this.events.onRegistry();
 
+    this.pendingChat = !(await this.syncChat());
+    this.pendingTiles = [];
+    for (const tile of this.config.tiles) {
+      if (!(await this.syncTile(tile))) this.pendingTiles.push(tile);
+    }
+    if (this.pendingChat || this.pendingTiles.length > 0) {
+      console.info(
+        `freeplace sync: ${this.pendingTiles.length} tile(s)${this.pendingChat ? " + chat" : ""} still syncing in the background`,
+      );
+      this.scheduleSyncRetry();
+    }
+  }
+
+  private async syncChat(attempts?: number): Promise<boolean> {
     const chatKey = this.key("chat");
     this.routes.set(hex(chatKey.bytes()), { kind: "chat" });
-    const chatState = decodeChatState(
-      await this.getStateWithLegacyProbe(
-        "chat",
-        chatKey,
-        legacy.chat,
-        (bytes) => decodeChatState(bytes).messages.size === 0,
-      ),
+    const bytes = await this.getStateWithLegacyProbe(
+      "chat",
+      chatKey,
+      this.config.legacyIds.chat,
+      (b) => decodeChatState(b).messages.size === 0,
+      attempts,
     );
-    for (const message of chatState.messages.values()) this.chat.insert(message);
-    await this.client.subscribe(chatKey);
+    if (bytes === null) return false;
+    for (const message of decodeChatState(bytes).messages.values()) this.chat.insert(message);
     this.events.onChat();
-
-    for (const tile of this.config.tiles) {
-      const tileKey = this.key("tile", tile);
-      this.routes.set(hex(tileKey.bytes()), { kind: "tile", x: tile.x, y: tile.y });
-      const legacyTileIds =
-        legacy.tiles.find((t) => t.x === tile.x && t.y === tile.y)?.ids ?? [];
-      const state = decodeTileState(
-        await this.getStateWithLegacyProbe(
-          `tile(${tile.x},${tile.y})`,
-          tileKey,
-          legacyTileIds,
-          (bytes) => decodeTileState(bytes).placements.size === 0,
-        ),
-      );
-      const target = this.tiles[tileIndex(tile.x, tile.y)];
-      for (const log of state.placements.values()) {
-        for (const placement of log.values()) target.insert(placement);
-      }
-      await this.client.subscribe(tileKey);
-      this.events.onTile(tile.x, tile.y);
+    try {
+      await withTimeout(this.client.subscribe(chatKey), SYNC_GET_TIMEOUT_MS, "chat subscribe");
+    } catch (err) {
+      console.info(`freeplace sync: chat subscribe failed: ${err}`);
+      return false;
     }
+    return true;
+  }
+
+  private async syncTile(tile: TileConfig, attempts?: number): Promise<boolean> {
+    const tileKey = this.key("tile", tile);
+    const label = `tile(${tile.x},${tile.y})`;
+    this.routes.set(hex(tileKey.bytes()), { kind: "tile", x: tile.x, y: tile.y });
+    const legacyTileIds =
+      this.config.legacyIds.tiles.find((t) => t.x === tile.x && t.y === tile.y)?.ids ?? [];
+    const bytes = await this.getStateWithLegacyProbe(
+      label,
+      tileKey,
+      legacyTileIds,
+      (b) => decodeTileState(b).placements.size === 0,
+      attempts,
+    );
+    if (bytes === null) return false;
+    mergeTileInto(this.tiles[tileIndex(tile.x, tile.y)], decodeTileState(bytes));
+    this.events.onTile(tile.x, tile.y);
+    try {
+      await withTimeout(this.client.subscribe(tileKey), SYNC_GET_TIMEOUT_MS, `${label} subscribe`);
+    } catch (err) {
+      console.info(`freeplace sync: ${label} subscribe failed: ${err}`);
+      return false;
+    }
+    return true;
+  }
+
+  /// Single background timer; re-arms itself while anything is pending.
+  /// Retries are single-attempt (the stalled first fetch completes in the
+  /// background, so the re-GET is answered from local state).
+  private scheduleSyncRetry(): void {
+    if (this.disposed || this.syncRetryTimer !== null) return;
+    if (!this.pendingChat && this.pendingTiles.length === 0) return;
+    this.syncRetryTimer = window.setTimeout(() => {
+      this.syncRetryTimer = null;
+      void this.retryPendingSync();
+    }, SYNC_RETRY_INTERVAL_MS);
+  }
+
+  private async retryPendingSync(): Promise<void> {
+    if (this.disposed) return;
+    if (this.pendingChat && (await this.syncChat(1))) this.pendingChat = false;
+    const still: TileConfig[] = [];
+    for (const tile of this.pendingTiles) {
+      if (!(await this.syncTile(tile, 1))) still.push(tile);
+    }
+    this.pendingTiles = still;
+    this.scheduleSyncRetry();
   }
 
   private onNotification(instanceHex: string, update: { state?: Uint8Array; delta?: Uint8Array }): void {
@@ -422,9 +530,7 @@ export class RealBackend implements Backend {
         const tile = this.tiles[tileIndex(route.x, route.y)];
         let arrivals: Placement[] | undefined;
         if (looksLikeFullState(bytes, "placements")) {
-          for (const log of decodeTileState(bytes).placements.values()) {
-            for (const placement of log.values()) tile.insert(placement);
-          }
+          mergeTileInto(tile, decodeTileState(bytes));
         } else {
           arrivals = decodeTileDelta(bytes);
           tile.applyDelta(arrivals);

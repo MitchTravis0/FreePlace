@@ -157,7 +157,7 @@ app.innerHTML = `
         <h3>How does placing work?</h3>
         <p class="muted">
           Pick a color, click the canvas: one pixel, then a cooldown before the
-          next (120&nbsp;s with proof-of-work admission, 30&nbsp;s with a ghost
+          next (20&nbsp;s with proof-of-work admission, 2&nbsp;s with a ghost
           key). Everything lives in Freenet contracts &mdash; there is no
           server.
         </p>

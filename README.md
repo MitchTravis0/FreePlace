@@ -26,7 +26,7 @@ http://127.0.0.1:7509/v1/contract/web/6xAnuGyjYvSjoPhtZhdpD5bPgSSdpEUsUSHDvoubsA
 
 Anti-bot admission is proof of work for everyone (18-bit blake3 grind, run in a Web
 Worker during onboarding). Holders of a [ghost key](https://freenet.org/ghostkey) can
-skip the wait and get a shorter pixel cooldown (30s per tile vs 120s). Ghost keys cost
+skip the wait and get a shorter pixel cooldown (2s per tile vs 20s). Ghost keys cost
 money, the money funds Freenet, and the mint is centralized; the PoW path is always
 sufficient for full participation.
 

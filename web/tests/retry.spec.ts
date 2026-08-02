@@ -119,3 +119,62 @@ test("updateOrPut does not PUT when UPDATE succeeds", async ({ page }) => {
   });
   expect(calls).toEqual(["update"]);
 });
+
+// Third live regression (2026-08-02, post-release): on a fresh node the
+// FIRST GET of a low-traffic contract can stall forever node-side (4 of 16
+// tiles reproduced) while still kicking off the network fetch; an immediate
+// re-GET answers from local state in milliseconds. getWithRetry gives every
+// sync GET a short per-attempt timeout plus retries, and returns null (for
+// the background-fill queue) instead of throwing when all attempts fail.
+test("getWithRetry retries a stalled GET and resolves on the second attempt", async ({ page }) => {
+  await page.goto("/?mock=1");
+  const result = await page.evaluate(async () => {
+    const module = (await import("/src/backend.ts")) as unknown as {
+      getWithRetry(
+        channel: { getState(key: unknown): Promise<Uint8Array> },
+        key: unknown,
+        label: string,
+        attempts?: number,
+        timeoutMs?: number,
+      ): Promise<Uint8Array | null>;
+    };
+    let calls = 0;
+    const channel = {
+      getState: () => {
+        calls++;
+        if (calls === 1) return new Promise<Uint8Array>(() => {}); // stalls
+        return Promise.resolve(Uint8Array.from([7]));
+      },
+    };
+    const bytes = await module.getWithRetry(channel, {}, "tile(0,1)", 3, 50);
+    return { calls, bytes: bytes ? Array.from(bytes) : null };
+  });
+  expect(result.calls).toBe(2);
+  expect(result.bytes).toEqual([7]);
+});
+
+test("getWithRetry returns null when every attempt times out", async ({ page }) => {
+  await page.goto("/?mock=1");
+  const result = await page.evaluate(async () => {
+    const module = (await import("/src/backend.ts")) as unknown as {
+      getWithRetry(
+        channel: { getState(key: unknown): Promise<Uint8Array> },
+        key: unknown,
+        label: string,
+        attempts?: number,
+        timeoutMs?: number,
+      ): Promise<Uint8Array | null>;
+    };
+    let calls = 0;
+    const channel = {
+      getState: () => {
+        calls++;
+        return new Promise<Uint8Array>(() => {});
+      },
+    };
+    const bytes = await module.getWithRetry(channel, {}, "chat", 3, 30);
+    return { calls, bytes };
+  });
+  expect(result.calls).toBe(3);
+  expect(result.bytes).toBeNull();
+});

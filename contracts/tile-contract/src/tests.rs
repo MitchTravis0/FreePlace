@@ -458,9 +458,9 @@ fn full_state_merge_verifies_placements() {
 
 // --- Phase 3 exit check: order-independent convergence ---------------------
 
-/// key(1) is Pow (120s cooldown): ts 105 lands inside the window opened at
+/// key(1) is Pow (20s cooldown): ts 105 lands inside the window opened at
 /// ts 100 and must be dropped from the derived canvas; ts 300 is clear.
-/// key(2) is Ghostkey (30s): ts 140 clears the window opened at ts 100.
+/// key(2) is Ghostkey (2s): ts 140 clears the window opened at ts 100.
 fn convergence_placements() -> Vec<SignedPlacement> {
     vec![
         placement(1, 10, 3, 100),
