@@ -54,6 +54,12 @@ pub enum IdentityRequest {
         name: String,
         version: u64,
     },
+    /// Move the identity stored under a previous release's web-container
+    /// origin into this (attested) origin's namespace, so identities survive
+    /// the per-release container re-key. Acts only when this origin holds no
+    /// identity yet; the source slot is blanked on success. First caller
+    /// wins — the accepted theft window is documented in plan.md's risks.
+    AdoptLegacyOrigin { old_webapp_id: [u8; 32] },
 }
 
 /// Responses the identity delegate sends back to the UI.
@@ -81,6 +87,15 @@ pub enum IdentityResponse {
     ChatUpdate {
         verifying_key: [u8; 32],
         delta: Vec<u8>,
+    },
+    /// Outcome of [`IdentityRequest::AdoptLegacyOrigin`]. `verifying_key` is
+    /// set when this origin now holds an identity (pre-existing or freshly
+    /// adopted); `adopted` says whether a legacy key was moved. Both unset
+    /// means neither origin had a key and the caller should fall back to
+    /// [`IdentityRequest::GetIdentity`].
+    AdoptResult {
+        adopted: bool,
+        verifying_key: Option<[u8; 32]>,
     },
     /// The request could not be served (malformed parameters, bad proof, ...).
     Error { message: String },

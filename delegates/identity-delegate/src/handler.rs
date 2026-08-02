@@ -115,5 +115,10 @@ fn try_handle(key: &SigningKey, request: IdentityRequest) -> Result<IdentityResp
                 delta: common::to_cbor(&delta),
             })
         }
+        // Routed to adopt_legacy_origin in lib.rs before any key is created;
+        // reaching this arm would mean a fresh key was minted mid-probe.
+        IdentityRequest::AdoptLegacyOrigin { .. } => {
+            Err("adoption must be handled before key creation".to_string())
+        }
     }
 }

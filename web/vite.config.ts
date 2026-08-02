@@ -37,7 +37,7 @@ export default defineConfig({
     // Phase 7: previous-release instance ids for the migration probe.
     __LEGACY_IDS_JSON__: readOrDefault(
       "legacy_ids.json",
-      '{"registry":[],"chat":[],"tiles":[]}',
+      '{"registry":[],"chat":[],"tiles":[],"webapps":[]}',
     ),
   },
   build: {

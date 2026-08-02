@@ -5,3 +5,9 @@
 # the preflight otherwise, and the UI's backward probe uses the release
 # manifest (published/) to carry state forward. No predecessors yet: nothing
 # has shipped before the v1 release.
+
+[[entry]]
+version = "V1"
+description = "re-keyed as a side effect of the tile baked-layer change in common (LTO layout perturbation; registry logic unchanged)"
+date = "2026-08-02"
+code_hash = "3752cb6b0bec3be9b4e3055a861984116139256de1dfab41a6904cc6597c77f6"

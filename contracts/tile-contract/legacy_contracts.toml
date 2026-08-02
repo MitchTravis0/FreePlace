@@ -8,4 +8,8 @@
 # date = "2026-07-30"
 # code_hash = "<blake3 hex of the outgoing WASM>"
 #
-# No predecessors yet: nothing has shipped before the v1 release.
+[[entry]]
+version = "V1"
+description = "pre-baked-layer tile: pixels vanished once an author's 9th placement evicted their 1st; TileState gained the baked layer (MAX_BAKED_PER_AUTHOR)"
+date = "2026-08-02"
+code_hash = "d87f78779742d9ec33d4502706cb927552df113807125ea502cebe93840b81a2"

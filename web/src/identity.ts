@@ -7,6 +7,7 @@ import { cborDecode, cborEncode, CborValue, enumVariant, mapGet } from "./cbor";
 import type { DelegateAddress } from "./delegate-api";
 import { delegateRoundTrip } from "./delegate-api";
 import type { FreenetClient } from "./freenet-api";
+import { contractKeyFromId } from "./freenet-api";
 
 export interface SignedDelta {
   verifyingKey: Uint8Array;
@@ -38,6 +39,31 @@ export class IdentityClient {
     const response = await this.request("GetIdentity");
     expectVariant(response.variant, "Identity");
     return asByteArray(mapGet(response.fields!, "verifying_key"));
+  }
+
+  /// Resolve this origin's identity, first trying to adopt one left under a
+  /// previous release's web-container id (newest first), so identities
+  /// survive the per-release container re-key. Falls back to GetIdentity,
+  /// which creates a fresh key.
+  async adoptOrGetIdentity(legacyWebappIds: string[]): Promise<Uint8Array> {
+    for (const id of legacyWebappIds) {
+      try {
+        const response = await this.request({
+          AdoptLegacyOrigin: { old_webapp_id: Array.from(contractKeyFromId(id).bytes()) },
+        });
+        expectVariant(response.variant, "AdoptResult");
+        const vk = mapGet(response.fields!, "verifying_key");
+        if (vk !== null && vk !== undefined) {
+          if (mapGet(response.fields!, "adopted") === true) {
+            console.info(`freeplace identity: adopted from previous release container ${id}`);
+          }
+          return asByteArray(vk);
+        }
+      } catch (err) {
+        console.info(`freeplace identity: adoption probe for ${id} failed: ${err}`);
+      }
+    }
+    return this.getIdentity();
   }
 
   async admissionChallenge(registryParams: Uint8Array): Promise<AdmissionChallenge> {

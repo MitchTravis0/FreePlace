@@ -10,3 +10,10 @@ description = "Phase 0 no-op stub; never shipped, no secrets were stored under t
 date = "2026-07-30"
 code_hash = "c8e480ce9e7d4669111c4b167beaa53356f3217e531c87103fa3180453759aa2"
 delegate_key = "b47f8ab11940e326dbd8ba14e7f28c05f213d92d31d21f5649c01c432215d504"
+
+[[entry]]
+version = "V2"
+description = "pre-AdoptLegacyOrigin delegate: identities rotated with every webapp release; secrets under this key are stranded (no delegate carry-forward runtime exists)"
+date = "2026-08-02"
+code_hash = "f829c99c1c617430b6a41603a3d0a0a5006cf7dae99271af70cb119d7da5936f"
+delegate_key = "c382b678ce0da042ae13b0f0fad29041a30013383a8d69a34c3a14e0d5f05610"

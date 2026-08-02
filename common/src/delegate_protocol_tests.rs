@@ -54,6 +54,37 @@ fn identity_response_wire_format_is_stable() {
 }
 
 #[test]
+fn adopt_legacy_origin_request_wire_format_is_stable() {
+    let request = IdentityRequest::AdoptLegacyOrigin {
+        old_webapp_id: [7u8; 32],
+    };
+    assert_eq!(
+        hex::encode(crate::to_cbor(&request)),
+        "a17141646f70744c65676163794f726967696ea16d6f6c645f7765626170705f696498200707070707070707070707070707070707070707070707070707070707070707"
+    );
+}
+
+#[test]
+fn adopt_result_response_wire_format_is_stable() {
+    let adopted = IdentityResponse::AdoptResult {
+        adopted: true,
+        verifying_key: Some([4u8; 32]),
+    };
+    assert_eq!(
+        hex::encode(crate::to_cbor(&adopted)),
+        "a16b41646f7074526573756c74a26761646f70746564f56d766572696679696e675f6b657998200404040404040404040404040404040404040404040404040404040404040404"
+    );
+    let nothing = IdentityResponse::AdoptResult {
+        adopted: false,
+        verifying_key: None,
+    };
+    assert_eq!(
+        hex::encode(crate::to_cbor(&nothing)),
+        "a16b41646f7074526573756c74a26761646f70746564f46d766572696679696e675f6b6579f6"
+    );
+}
+
+#[test]
 fn protocol_roundtrips_through_cbor() {
     let request = IdentityRequest::SignChatMessage {
         chat_params: vec![1],
@@ -76,7 +107,7 @@ fn legacy_delegate_lineage_matches_the_registry() {
     // and fails the build on mismatch; this pins the emitted contents so the
     // registry file cannot silently lose or reorder entries.
     let lineage = crate::legacy::LEGACY_IDENTITY_DELEGATES;
-    assert_eq!(lineage.len(), 1);
+    assert_eq!(lineage.len(), 2);
     let (delegate_key, code_hash) = lineage[0];
     assert_eq!(
         hex::encode(code_hash),
@@ -85,5 +116,14 @@ fn legacy_delegate_lineage_matches_the_registry() {
     assert_eq!(
         hex::encode(delegate_key),
         "b47f8ab11940e326dbd8ba14e7f28c05f213d92d31d21f5649c01c432215d504"
+    );
+    let (delegate_key, code_hash) = lineage[1];
+    assert_eq!(
+        hex::encode(code_hash),
+        "f829c99c1c617430b6a41603a3d0a0a5006cf7dae99271af70cb119d7da5936f"
+    );
+    assert_eq!(
+        hex::encode(delegate_key),
+        "c382b678ce0da042ae13b0f0fad29041a30013383a8d69a34c3a14e0d5f05610"
     );
 }

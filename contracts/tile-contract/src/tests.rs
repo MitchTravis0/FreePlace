@@ -266,6 +266,149 @@ fn far_future_placement_is_invalid_in_validate() {
     ));
 }
 
+// --- Validation: the baked layer -------------------------------------------
+
+/// Twelve honest placements: eight live, four baked. Structure and
+/// membership checks must cover both maps.
+fn baked_state() -> TileState {
+    let mut state = TileState::default();
+    for i in 0..(MAX_PLACEMENTS_PER_AUTHOR as u64 + 4) {
+        state.insert(placement(1, i as u16, 3, 100 + 130 * i));
+    }
+    assert!(!state.baked.is_empty());
+    state
+}
+
+#[test]
+fn baked_state_validates_against_registry() {
+    assert!(matches!(
+        validate(&state_bytes_of(&baked_state()), related_registry()),
+        ValidateResult::Valid
+    ));
+}
+
+#[test]
+fn unadmitted_baked_author_is_invalid() {
+    let mut state = baked_state();
+    let foreign = placement(3, 9, 3, 50);
+    state
+        .baked
+        .entry(AuthorId::from(&foreign.author))
+        .or_default()
+        .insert(foreign.ts, foreign);
+    assert!(matches!(
+        validate(&state_bytes_of(&state), related_registry()),
+        ValidateResult::Invalid
+    ));
+}
+
+#[test]
+fn tampered_baked_placement_is_invalid() {
+    let mut state = baked_state();
+    let log = state.baked.values_mut().next().unwrap();
+    log.values_mut().next().unwrap().color += 1;
+    assert!(matches!(
+        validate(&state_bytes_of(&state), related_registry()),
+        ValidateResult::Invalid
+    ));
+}
+
+#[test]
+fn mismatched_baked_keys_are_invalid() {
+    let p = placement(1, 10, 3, 100);
+    let mut state = baked_state();
+    state
+        .baked
+        .entry(AuthorId::from(&key(2).verifying_key()))
+        .or_default()
+        .insert(p.ts, p);
+    assert!(matches!(
+        validate(&state_bytes_of(&state), related_registry()),
+        ValidateResult::Invalid
+    ));
+
+    let mut state = baked_state();
+    state
+        .baked
+        .entry(AuthorId::from(&p.author))
+        .or_default()
+        .insert(p.ts + 1, p);
+    assert!(matches!(
+        validate(&state_bytes_of(&state), related_registry()),
+        ValidateResult::Invalid
+    ));
+}
+
+#[test]
+fn oversized_baked_log_is_invalid() {
+    let mut log = BTreeMap::new();
+    for i in 0..=common::constants::MAX_BAKED_PER_AUTHOR as u64 {
+        let p = placement(1, i as u16, 1, 100 + i);
+        log.insert(p.ts, p);
+    }
+    let mut state = baked_state();
+    state
+        .baked
+        .insert(AuthorId::from(&key(1).verifying_key()), log);
+    assert!(matches!(
+        validate(&state_bytes_of(&state), related_registry()),
+        ValidateResult::Invalid
+    ));
+}
+
+#[test]
+fn merge_of_state_with_tampered_baked_entry_is_rejected() {
+    let mut incoming = baked_state();
+    incoming
+        .baked
+        .values_mut()
+        .next()
+        .unwrap()
+        .values_mut()
+        .next()
+        .unwrap()
+        .ts += 1;
+    assert!(run_updates(
+        genesis(),
+        vec![UpdateData::State(State::from(state_bytes_of(&incoming)))],
+    )
+    .is_err());
+}
+
+/// The end-to-end regression for the "my oldest pixels disappear" bug at the
+/// contract boundary: placements beyond the live cap stay in state (baked)
+/// and stay visible, whatever order peers saw them in.
+#[test]
+fn evicted_pixels_survive_through_the_update_path() {
+    let placements: Vec<SignedPlacement> = (0..(MAX_PLACEMENTS_PER_AUTHOR as u64 + 4))
+        .map(|i| placement(1, i as u16, 3, 100 + 130 * i))
+        .collect();
+    let forward: Vec<UpdateData> = placements.iter().map(|p| delta_update(vec![*p])).collect();
+    let reverse: Vec<UpdateData> = placements
+        .iter()
+        .rev()
+        .map(|p| delta_update(vec![*p]))
+        .collect();
+    let peer_a = run_updates(genesis(), forward).unwrap();
+    let peer_b = run_updates(genesis(), reverse).unwrap();
+    assert_eq!(peer_a, peer_b, "state bytes must be identical");
+
+    let state: TileState = common::from_cbor(&peer_a).unwrap();
+    assert!(!state.baked.is_empty());
+    let canvas = state.derive_canvas(tier_of);
+    for (i, pixel) in canvas
+        .iter()
+        .take(MAX_PLACEMENTS_PER_AUTHOR + 4)
+        .enumerate()
+    {
+        assert_eq!(*pixel, 3, "pixel at coord {i} must survive eviction");
+    }
+    assert!(matches!(
+        validate(&peer_a, related_registry()),
+        ValidateResult::Valid
+    ));
+}
+
 // --- Updates: cheap checks at ingress --------------------------------------
 
 #[test]
@@ -387,9 +530,10 @@ fn state_merge_and_delta_paths_converge() {
 
 #[test]
 fn delta_to_converged_peer_is_zero_bytes_against_populated_tile() {
+    let per_author = MAX_PLACEMENTS_PER_AUTHOR as u64 + 2;
     let mut updates = Vec::new();
     for author in [1u8, 2] {
-        for i in 0..MAX_PLACEMENTS_PER_AUTHOR as u64 {
+        for i in 0..per_author {
             updates.push(delta_update(vec![placement(
                 author,
                 (author as u16) * 100 + i as u16,
@@ -400,6 +544,11 @@ fn delta_to_converged_peer_is_zero_bytes_against_populated_tile() {
     }
     let state_bytes = run_updates(genesis(), updates).unwrap();
     assert!(state_bytes.len() > 2000, "tile should be populated");
+    let populated: TileState = common::from_cbor(&state_bytes).unwrap();
+    assert!(
+        !populated.baked.is_empty(),
+        "tile should have a baked layer"
+    );
     let raw = State::from(state_bytes.clone());
 
     let summary = Contract::summarize_state(params_bytes(), raw.clone()).unwrap();
@@ -419,9 +568,9 @@ fn delta_to_converged_peer_is_zero_bytes_against_populated_tile() {
         state_bytes.len()
     );
 
-    // A peer with an empty summary gets every placement.
+    // A peer with an empty summary gets every placement, baked included.
     let empty_summary = StateSummary::from(common::to_cbor(&TileSummary::default()));
     let full = Contract::get_state_delta(params_bytes(), raw, empty_summary).unwrap();
     let parsed: TileDelta = common::from_cbor(full.as_ref()).unwrap();
-    assert_eq!(parsed.placements.len(), 2 * MAX_PLACEMENTS_PER_AUTHOR);
+    assert_eq!(parsed.placements.len(), 2 * per_author as usize);
 }

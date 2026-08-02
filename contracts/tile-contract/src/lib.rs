@@ -3,7 +3,7 @@
 //! skew); registry admission of every author is checked in the validate pass
 //! the host runs after each update, via the related-contracts mechanism.
 
-use common::constants::{MAX_FUTURE_SKEW_SECS, MAX_PLACEMENTS_PER_AUTHOR};
+use common::constants::{MAX_BAKED_PER_AUTHOR, MAX_FUTURE_SKEW_SECS, MAX_PLACEMENTS_PER_AUTHOR};
 use common::identity::AuthorId;
 use common::registry::RegistryState;
 use common::tile::{
@@ -72,21 +72,27 @@ fn verify_state_structure(
     params: &TileParameters,
     now: u64,
 ) -> Result<(), String> {
-    for (author, log) in &state.placements {
-        if log.is_empty() {
-            return Err("empty placement log".to_string());
-        }
-        if log.len() > MAX_PLACEMENTS_PER_AUTHOR {
-            return Err("placement log exceeds the per-author cap".to_string());
-        }
-        for (ts, placement) in log {
-            if *author != AuthorId::from(&placement.author) {
-                return Err("placement stored under a mismatched author key".to_string());
+    let families = [
+        (&state.placements, MAX_PLACEMENTS_PER_AUTHOR),
+        (&state.baked, MAX_BAKED_PER_AUTHOR),
+    ];
+    for (logs, cap) in families {
+        for (author, log) in logs {
+            if log.is_empty() {
+                return Err("empty placement log".to_string());
             }
-            if *ts != placement.ts {
-                return Err("placement stored under a mismatched timestamp key".to_string());
+            if log.len() > cap {
+                return Err("placement log exceeds the per-author cap".to_string());
             }
-            verify_placement(placement, params, now)?;
+            for (ts, placement) in log {
+                if *author != AuthorId::from(&placement.author) {
+                    return Err("placement stored under a mismatched author key".to_string());
+                }
+                if *ts != placement.ts {
+                    return Err("placement stored under a mismatched timestamp key".to_string());
+                }
+                verify_placement(placement, params, now)?;
+            }
         }
     }
     Ok(())
@@ -99,7 +105,7 @@ fn check_registry_membership(state: &TileState, registry_bytes: &[u8]) -> Result
     } else {
         common::from_cbor(registry_bytes)?
     };
-    for author in state.placements.keys() {
+    for author in state.placements.keys().chain(state.baked.keys()) {
         if !registry.identities.contains_key(author) {
             return Err("placement author not admitted in the registry".to_string());
         }
@@ -147,9 +153,10 @@ fn merge_state(
     now: u64,
 ) -> Result<(), ContractError> {
     let incoming = decode_state(bytes).map_err(reject)?;
-    // merge() re-inserts each placement keyed by its own author and timestamp,
-    // so only per-placement checks are needed here, not structural ones.
-    for log in incoming.placements.values() {
+    // merge() re-inserts each placement (live and baked) keyed by its own
+    // author and timestamp and re-applies the caps, so only per-placement
+    // checks are needed here, not structural ones.
+    for log in incoming.placements.values().chain(incoming.baked.values()) {
         for placement in log.values() {
             verify_placement(placement, params, now).map_err(reject)?;
         }

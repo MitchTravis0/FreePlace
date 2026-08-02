@@ -256,6 +256,98 @@ fn zero_version_nickname_is_refused() {
     assert!(matches!(response, IdentityResponse::Error { .. }));
 }
 
+// --- AdoptLegacyOrigin: identity carry-forward across webapp re-keys -------
+
+use std::collections::HashMap;
+
+use crate::{adopt_legacy_origin, SecretStore};
+
+#[derive(Default)]
+struct MapStore(HashMap<Vec<u8>, Vec<u8>>);
+
+impl SecretStore for MapStore {
+    fn get(&mut self, key: &[u8]) -> Option<Vec<u8>> {
+        self.0.get(key).cloned()
+    }
+    fn set(&mut self, key: &[u8], value: &[u8]) -> bool {
+        self.0.insert(key.to_vec(), value.to_vec());
+        true
+    }
+}
+
+fn webapp_slot(id: u8) -> Vec<u8> {
+    crate::webapp_secret_key(&[id; 32])
+}
+
+#[test]
+fn adopts_a_legacy_identity_and_blanks_the_source() {
+    let seed = [42u8; 32];
+    let mut store = MapStore::default();
+    store.set(&webapp_slot(1), &seed);
+
+    let current = webapp_slot(2);
+    let response = adopt_legacy_origin(&mut store, &current, &[1u8; 32]);
+    let expected_vk = SigningKey::from_bytes(&seed).verifying_key().to_bytes();
+    assert_eq!(
+        response,
+        IdentityResponse::AdoptResult {
+            adopted: true,
+            verifying_key: Some(expected_vk),
+        }
+    );
+    // The identity now lives under the new origin; GetIdentity there loads
+    // the same signing key.
+    assert_eq!(store.get(&current), Some(seed.to_vec()));
+    // The source slot is blanked, not deleted: any later read treats it as
+    // absent, and a second adopter gets nothing.
+    assert_eq!(store.get(&webapp_slot(1)), Some(vec![]));
+    let response = adopt_legacy_origin(&mut store, &webapp_slot(3), &[1u8; 32]);
+    assert_eq!(
+        response,
+        IdentityResponse::AdoptResult {
+            adopted: false,
+            verifying_key: None,
+        }
+    );
+}
+
+#[test]
+fn adoption_is_a_no_op_when_the_origin_already_has_an_identity() {
+    let mine = [5u8; 32];
+    let theirs = [6u8; 32];
+    let mut store = MapStore::default();
+    let current = webapp_slot(2);
+    store.set(&current, &mine);
+    store.set(&webapp_slot(1), &theirs);
+
+    let response = adopt_legacy_origin(&mut store, &current, &[1u8; 32]);
+    assert_eq!(
+        response,
+        IdentityResponse::AdoptResult {
+            adopted: false,
+            verifying_key: Some(SigningKey::from_bytes(&mine).verifying_key().to_bytes()),
+        }
+    );
+    // Neither slot changed.
+    assert_eq!(store.get(&current), Some(mine.to_vec()));
+    assert_eq!(store.get(&webapp_slot(1)), Some(theirs.to_vec()));
+}
+
+#[test]
+fn probing_never_mints_an_identity() {
+    let mut store = MapStore::default();
+    let current = webapp_slot(2);
+    let response = adopt_legacy_origin(&mut store, &current, &[1u8; 32]);
+    assert_eq!(
+        response,
+        IdentityResponse::AdoptResult {
+            adopted: false,
+            verifying_key: None,
+        }
+    );
+    assert!(store.0.is_empty(), "probe must not write anything");
+}
+
 #[test]
 fn malformed_parameters_are_reported_not_panicked() {
     let key = test_key();

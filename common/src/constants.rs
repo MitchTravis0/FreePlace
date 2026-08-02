@@ -22,6 +22,11 @@ pub const EMPTY_PIXEL: u8 = 0xff;
 /// Per-author placement log cap (evicted by count, newest kept; never by age).
 pub const MAX_PLACEMENTS_PER_AUTHOR: usize = 8;
 
+/// Per-author cap on the baked layer: placements evicted from the live log are
+/// baked (kept newest-first) so canvas pixels survive past the live cap, while
+/// one identity's permanent footprint per tile stays bounded.
+pub const MAX_BAKED_PER_AUTHOR: usize = 256;
+
 /// Per-tile cooldown for PoW-admitted identities, in seconds.
 pub const POW_TILE_COOLDOWN_SECS: u64 = 120;
 

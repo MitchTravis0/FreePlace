@@ -139,10 +139,10 @@ function encodePlacement(p: Placement): CborMap {
   ]);
 }
 
-export function encodeTileState(state: TileStateJs): Uint8Array {
-  const placements: CborMap = new Map();
-  for (const author of [...state.placements.keys()].sort()) {
-    const log = state.placements.get(author)!;
+function encodeLogs(logs: Map<string, Map<number, Placement>>): CborMap {
+  const out: CborMap = new Map();
+  for (const author of [...logs.keys()].sort()) {
+    const log = logs.get(author)!;
     const inner: CborMap = new Map();
     let authorBytes: Uint8Array | null = null;
     for (const ts of [...log.keys()].sort((a, b) => a - b)) {
@@ -150,9 +150,16 @@ export function encodeTileState(state: TileStateJs): Uint8Array {
       authorBytes = placement.author;
       inner.set(ts, encodePlacement(placement));
     }
-    if (authorBytes) placements.set(Array.from(authorBytes), inner);
+    if (authorBytes) out.set(Array.from(authorBytes), inner);
   }
-  return cborEncode(new Map<CborValue, CborValue>([["placements", placements]]));
+  return out;
+}
+
+export function encodeTileState(state: TileStateJs): Uint8Array {
+  const root = new Map<CborValue, CborValue>([["placements", encodeLogs(state.placements)]]);
+  // Mirrors the Rust skip_serializing_if: an empty baked layer is absent.
+  if (state.baked.size > 0) root.set("baked", encodeLogs(state.baked));
+  return cborEncode(root);
 }
 
 export function mergeTileState(stateBytes: Uint8Array, deltaBytes: Uint8Array): Uint8Array {

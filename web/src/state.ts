@@ -16,6 +16,7 @@ export const CANVAS_SIZE = TILE_SIZE * TILES_PER_SIDE;
 export const PALETTE_COLORS = 16;
 export const EMPTY_PIXEL = 0xff;
 export const MAX_PLACEMENTS_PER_AUTHOR = 8;
+export const MAX_BAKED_PER_AUTHOR = 256;
 export const POW_TILE_COOLDOWN_SECS = 120;
 export const GHOSTKEY_TILE_COOLDOWN_SECS = 30;
 export const CHAT_MESSAGE_CAP = 500;
@@ -76,9 +77,26 @@ function lwwGreater(a: Placement, b: Placement): boolean {
   return cmp > 0;
 }
 
-/// One tile's placement logs: author hex -> (ts -> placement).
+/// One tile's placement logs: author hex -> (ts -> placement), plus the baked
+/// layer (placements displaced from the live log by its cap, kept in a second
+/// per-author log capped at MAX_BAKED_PER_AUTHOR). Mirrors TileState in
+/// tile.rs: baking is what stops pixels from vanishing when their author
+/// keeps placing.
 export class TileStateJs {
   placements = new Map<string, Map<number, Placement>>();
+  baked = new Map<string, Map<number, Placement>>();
+
+  private static logInsert(log: Map<number, Placement>, placement: Placement, cap: number): Placement[] {
+    const existing = log.get(placement.ts);
+    log.set(placement.ts, existing ? placementSlotWinner(existing, placement) : placement);
+    const displaced: Placement[] = [];
+    while (log.size > cap) {
+      const oldest = Math.min(...log.keys());
+      displaced.push(log.get(oldest)!);
+      log.delete(oldest);
+    }
+    return displaced;
+  }
 
   insert(placement: Placement): void {
     const author = hex(placement.author);
@@ -87,36 +105,51 @@ export class TileStateJs {
       log = new Map();
       this.placements.set(author, log);
     }
-    const existing = log.get(placement.ts);
-    log.set(placement.ts, existing ? placementSlotWinner(existing, placement) : placement);
-    while (log.size > MAX_PLACEMENTS_PER_AUTHOR) {
-      log.delete(Math.min(...log.keys()));
+    for (const evicted of TileStateJs.logInsert(log, placement, MAX_PLACEMENTS_PER_AUTHOR)) {
+      this.bake(evicted);
     }
+  }
+
+  /// Mirrors tile.rs bake_bounded: what the baked cap displaces is gone.
+  bake(placement: Placement): void {
+    const author = hex(placement.author);
+    let log = this.baked.get(author);
+    if (!log) {
+      log = new Map();
+      this.baked.set(author, log);
+    }
+    TileStateJs.logInsert(log, placement, MAX_BAKED_PER_AUTHOR);
   }
 
   applyDelta(delta: Placement[]): void {
     for (const placement of delta) this.insert(placement);
   }
 
-  /// The greedy cooldown filter from tile.rs: per author, earliest-first,
-  /// accept each placement >= the tier cooldown after the last accepted.
-  /// Unadmitted authors contribute nothing. `cutoffTs` (replay) restricts the
-  /// input set to placements with ts <= cutoff *before* the filter runs, so
-  /// the result is "what the canvas would have shown had only those existed".
+  /// The greedy cooldown filter from tile.rs: per author, one chain over the
+  /// baked then live entries earliest-first, accepting each placement >= the
+  /// tier cooldown after the last accepted (so eviction cannot launder a
+  /// rapid burst into visible pixels). Unadmitted authors contribute nothing.
+  /// `cutoffTs` (replay) restricts the input set to placements with
+  /// ts <= cutoff *before* the filter runs, so the result is "what the canvas
+  /// would have shown had only those existed".
   validPlacements(tierOf: (authorHex: string) => Tier | null, cutoffTs?: number): Placement[] {
     const accepted: Placement[] = [];
-    for (const [author, log] of this.placements) {
+    const authors = [...new Set([...this.placements.keys(), ...this.baked.keys()])].sort();
+    for (const author of authors) {
       const tier = tierOf(author);
       if (!tier) continue;
       const cooldown = tierCooldownSecs(tier);
+      const entries = [
+        ...(this.baked.get(author)?.values() ?? []),
+        ...(this.placements.get(author)?.values() ?? []),
+      ]
+        .filter((p) => cutoffTs === undefined || p.ts <= cutoffTs)
+        .sort((a, b) => a.ts - b.ts);
       let lastAccepted: number | null = null;
-      const timestamps = [...log.keys()]
-        .filter((ts) => cutoffTs === undefined || ts <= cutoffTs)
-        .sort((a, b) => a - b);
-      for (const ts of timestamps) {
-        if (lastAccepted === null || ts - lastAccepted >= cooldown) {
-          accepted.push(log.get(ts)!);
-          lastAccepted = ts;
+      for (const placement of entries) {
+        if (lastAccepted === null || placement.ts - lastAccepted >= cooldown) {
+          accepted.push(placement);
+          lastAccepted = placement.ts;
         }
       }
     }
@@ -153,16 +186,28 @@ export function canvasFromWinners(winners: Map<number, Placement>): Uint8Array {
   return canvas;
 }
 
-/// Decode a full TileState (CBOR map {placements: {author -> {ts -> p}}}).
+/// Decode a full TileState (CBOR map {placements: {author -> {ts -> p}},
+/// baked?: {author -> {ts -> p}}}; `baked` is absent when empty).
 export function decodeTileState(bytes: Uint8Array): TileStateJs {
   const state = new TileStateJs();
   if (bytes.length === 0) return state;
-  const placements = mapGet(cborDecode(bytes), "placements");
-  if (!(placements instanceof Map)) return state;
-  for (const log of placements.values()) {
-    if (!(log instanceof Map)) continue;
-    for (const placement of log.values()) {
-      state.insert(decodePlacement(placement));
+  const root = cborDecode(bytes);
+  const placements = mapGet(root, "placements");
+  if (placements instanceof Map) {
+    for (const log of placements.values()) {
+      if (!(log instanceof Map)) continue;
+      for (const placement of log.values()) {
+        state.insert(decodePlacement(placement));
+      }
+    }
+  }
+  const baked = mapGet(root, "baked");
+  if (baked instanceof Map) {
+    for (const log of baked.values()) {
+      if (!(log instanceof Map)) continue;
+      for (const placement of log.values()) {
+        state.bake(decodePlacement(placement));
+      }
     }
   }
   return state;

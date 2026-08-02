@@ -12,27 +12,90 @@ use freenet_stdlib::prelude::*;
 
 pub struct Delegate;
 
+/// Secret-store key for a web-container origin's identity signing key.
+fn webapp_secret_key(id: &[u8]) -> Vec<u8> {
+    let mut key = b"freeplace:identity:v1:webapp:".to_vec();
+    key.extend_from_slice(id);
+    key
+}
+
 /// Secret-store key for the identity signing key, namespaced by the attested
 /// message origin so different apps sharing this delegate get isolated
 /// identities. The layout is part of the delegate's storage format: changing
 /// it strands existing keys just like a WASM re-key would.
 fn secret_key_for(origin: Option<&MessageOrigin>) -> Vec<u8> {
-    let mut key = b"freeplace:identity:v1:".to_vec();
     match origin {
-        Some(MessageOrigin::WebApp(id)) => {
-            key.extend_from_slice(b"webapp:");
-            key.extend_from_slice(id.as_bytes());
-        }
+        Some(MessageOrigin::WebApp(id)) => webapp_secret_key(id.as_bytes()),
         Some(MessageOrigin::Delegate(dk)) => {
-            key.extend_from_slice(b"delegate:");
+            let mut key = b"freeplace:identity:v1:delegate:".to_vec();
             key.extend_from_slice(dk.bytes());
+            key
         }
-        None => key.extend_from_slice(b"unattested"),
+        None => b"freeplace:identity:v1:unattested".to_vec(),
         // MessageOrigin is #[non_exhaustive]; future variants get a stable
         // bucket rather than a compile break.
-        Some(_) => key.extend_from_slice(b"unknown-origin"),
+        Some(_) => b"freeplace:identity:v1:unknown-origin".to_vec(),
     }
-    key
+}
+
+/// Storage seam over the ctx secret API so the adoption logic is natively
+/// testable (the host functions are WASM-only).
+pub(crate) trait SecretStore {
+    fn get(&mut self, key: &[u8]) -> Option<Vec<u8>>;
+    fn set(&mut self, key: &[u8], value: &[u8]) -> bool;
+}
+
+impl SecretStore for DelegateCtx {
+    fn get(&mut self, key: &[u8]) -> Option<Vec<u8>> {
+        self.get_secret(key)
+    }
+    fn set(&mut self, key: &[u8], value: &[u8]) -> bool {
+        self.set_secret(key, value)
+    }
+}
+
+/// A stored value is an identity only if it is exactly a 32-byte seed; blanked
+/// slots (zero-length, written on adoption) and corrupt values read as absent.
+fn stored_seed(store: &mut impl SecretStore, key: &[u8]) -> Option<[u8; 32]> {
+    store.get(key)?.try_into().ok()
+}
+
+fn verifying_key_of(seed: &[u8; 32]) -> [u8; 32] {
+    SigningKey::from_bytes(seed).verifying_key().to_bytes()
+}
+
+/// Move the identity left under a previous release's web-container origin
+/// into `current` (the attested origin's slot). Only acts when `current` is
+/// empty; blanks the source on success so it cannot be adopted twice
+/// (first-caller-wins window, accepted in plan.md's risks).
+pub(crate) fn adopt_legacy_origin(
+    store: &mut impl SecretStore,
+    current: &[u8],
+    old_webapp_id: &[u8; 32],
+) -> IdentityResponse {
+    if let Some(existing) = stored_seed(store, current) {
+        return IdentityResponse::AdoptResult {
+            adopted: false,
+            verifying_key: Some(verifying_key_of(&existing)),
+        };
+    }
+    let old_key = webapp_secret_key(old_webapp_id);
+    let Some(seed) = stored_seed(store, &old_key) else {
+        return IdentityResponse::AdoptResult {
+            adopted: false,
+            verifying_key: None,
+        };
+    };
+    if !store.set(current, &seed) {
+        return IdentityResponse::Error {
+            message: "failed to persist the adopted identity".to_string(),
+        };
+    }
+    store.set(&old_key, &[]);
+    IdentityResponse::AdoptResult {
+        adopted: true,
+        verifying_key: Some(verifying_key_of(&seed)),
+    }
 }
 
 /// Load the origin's signing key, generating and persisting one from host
@@ -77,6 +140,14 @@ impl DelegateInterface for Delegate {
                     Err(e) => IdentityResponse::Error {
                         message: format!("malformed request: {e}"),
                     },
+                    // Adoption must run before load_or_create_key: probing for
+                    // a legacy identity must never mint a fresh one.
+                    Ok(common::delegate_protocol::IdentityRequest::AdoptLegacyOrigin {
+                        old_webapp_id,
+                    }) => {
+                        let current = secret_key_for(origin.as_ref());
+                        adopt_legacy_origin(ctx, &current, &old_webapp_id)
+                    }
                     Ok(request) => match load_or_create_key(ctx, origin.as_ref()) {
                         Ok(key) => handler::handle_request(&key, request),
                         Err(message) => IdentityResponse::Error { message },

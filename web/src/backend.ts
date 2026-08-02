@@ -201,6 +201,10 @@ export interface LegacyIds {
   registry: string[];
   chat: string[];
   tiles: { x: number; y: number; ids: string[] }[];
+  /// Previous releases' web-container ids (newest first), probed by the
+  /// identity delegate's AdoptLegacyOrigin so identities survive re-keys.
+  /// Optional: absent in legacy_ids.json files written before this shipped.
+  webapps?: string[];
 }
 
 export class RealBackend implements Backend {
@@ -263,7 +267,7 @@ export class RealBackend implements Backend {
   }
 
   private async onOpen(): Promise<void> {
-    this.myVk = await this.identity.getIdentity();
+    this.myVk = await this.identity.adoptOrGetIdentity(this.config.legacyIds.webapps ?? []);
     await this.syncAll();
     this.events.onConnection("connected");
   }

@@ -10,7 +10,9 @@ use std::collections::BTreeMap;
 use ed25519_dalek::{Signature, SigningKey, VerifyingKey};
 use serde::{Deserialize, Serialize};
 
-use crate::constants::{EMPTY_PIXEL, MAX_PLACEMENTS_PER_AUTHOR, PALETTE_COLORS, TILE_AREA};
+use crate::constants::{
+    EMPTY_PIXEL, MAX_BAKED_PER_AUTHOR, MAX_PLACEMENTS_PER_AUTHOR, PALETTE_COLORS, TILE_AREA,
+};
 use crate::identity::{AuthorId, Tier};
 
 /// Domain-separation prefix for placement signature preimages.
@@ -113,11 +115,21 @@ fn slot_winner(a: SignedPlacement, b: SignedPlacement) -> SignedPlacement {
     }
 }
 
+/// One author's ts-keyed placement log (the shape of both state maps).
+pub type PlacementLog = BTreeMap<u64, SignedPlacement>;
+
 /// Tile contract state: per-author recent placement logs, keyed by timestamp,
-/// capped at the newest MAX_PLACEMENTS_PER_AUTHOR entries per author.
+/// capped at the newest MAX_PLACEMENTS_PER_AUTHOR entries per author, plus the
+/// baked layer: placements displaced from the live log by that cap, kept as a
+/// second per-author log capped at MAX_BAKED_PER_AUTHOR (newest kept). Baking
+/// is what stops canvas pixels from vanishing when their author keeps placing.
+/// `baked` is skipped when empty so pre-baked-layer states and genesis bytes
+/// are unchanged.
 #[derive(Clone, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
 pub struct TileState {
-    pub placements: BTreeMap<AuthorId, BTreeMap<u64, SignedPlacement>>,
+    pub placements: BTreeMap<AuthorId, PlacementLog>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub baked: BTreeMap<AuthorId, PlacementLog>,
 }
 
 /// Summary: per-author newest-timestamp watermark. BTreeMap (never HashMap) so
@@ -131,48 +143,103 @@ pub struct TileDelta {
     pub placements: Vec<SignedPlacement>,
 }
 
+/// Insert into a ts-keyed log with deterministic same-slot resolution and a
+/// newest-K cap, returning what the cap displaced. Keep-K-largest composes
+/// with set union, so any merge order of the same placement sets converges.
+fn log_insert(
+    log: &mut PlacementLog,
+    placement: SignedPlacement,
+    cap: usize,
+) -> Vec<SignedPlacement> {
+    log.entry(placement.ts)
+        .and_modify(|existing| *existing = slot_winner(*existing, placement))
+        .or_insert(placement);
+    let mut displaced = Vec::new();
+    while log.len() > cap {
+        let oldest = *log.keys().next().expect("log is non-empty");
+        displaced.push(log.remove(&oldest).expect("oldest key exists"));
+    }
+    displaced
+}
+
 impl TileState {
     /// Insert one placement, resolving same-timestamp conflicts
     /// deterministically and enforcing the per-author cap (newest kept).
+    /// Placements the cap displaces are baked rather than dropped.
     pub fn insert(&mut self, placement: SignedPlacement) {
-        let log = self.placements.entry(placement.author_id()).or_default();
-        log.entry(placement.ts)
-            .and_modify(|existing| *existing = slot_winner(*existing, placement))
-            .or_insert(placement);
-        while log.len() > MAX_PLACEMENTS_PER_AUTHOR {
-            let oldest = *log.keys().next().expect("log is non-empty");
-            log.remove(&oldest);
+        self.insert_bounded(placement, MAX_PLACEMENTS_PER_AUTHOR, MAX_BAKED_PER_AUTHOR);
+    }
+
+    /// Cap-parametric insert (property tests use small caps to keep case
+    /// generation cheap, mirroring chat's insert_bounded).
+    pub(crate) fn insert_bounded(
+        &mut self,
+        placement: SignedPlacement,
+        log_cap: usize,
+        baked_cap: usize,
+    ) {
+        let author = placement.author_id();
+        let log = self.placements.entry(author).or_default();
+        for evicted in log_insert(log, placement, log_cap) {
+            self.bake_bounded(evicted, baked_cap);
         }
     }
 
-    /// Commutative merge: per-slot deterministic resolution, then the newest-K
-    /// cap. Keep-K-largest composes with set union, so any merge order of the
-    /// same placement sets converges (pinned by property tests).
+    /// Bake one placement displaced from a live log. The baked layer is itself
+    /// a per-author newest-K log (same convergence argument as the live log);
+    /// what its cap displaces is gone for good. Keyed by the placement's own
+    /// author and ts, never by a caller-supplied key.
+    fn bake_bounded(&mut self, placement: SignedPlacement, baked_cap: usize) {
+        let log = self.baked.entry(placement.author_id()).or_default();
+        log_insert(log, placement, baked_cap);
+    }
+
+    /// Commutative merge: per-slot deterministic resolution, then the caps.
+    /// The other peer's baked entries go straight to our baked layer (they
+    /// were displaced from a live log somewhere, which is a property of the
+    /// placement set, not of the arrival order).
     pub fn merge(&mut self, other: &TileState) {
+        self.merge_bounded(other, MAX_PLACEMENTS_PER_AUTHOR, MAX_BAKED_PER_AUTHOR);
+    }
+
+    pub(crate) fn merge_bounded(&mut self, other: &TileState, log_cap: usize, baked_cap: usize) {
         for log in other.placements.values() {
             for placement in log.values() {
-                self.insert(*placement);
+                self.insert_bounded(*placement, log_cap, baked_cap);
+            }
+        }
+        for log in other.baked.values() {
+            for placement in log.values() {
+                self.bake_bounded(*placement, baked_cap);
             }
         }
     }
 
-    /// Per-author newest-timestamp watermarks.
+    /// Per-author newest-timestamp watermarks, over the live and baked logs
+    /// (baked entries are older than the live log in every honestly reachable
+    /// state, so covering them changes nothing there; it keeps the converged
+    /// delta at zero bytes even for adversarially crafted shapes).
     pub fn summarize(&self) -> TileSummary {
-        TileSummary(
-            self.placements
-                .iter()
-                .filter_map(|(author, log)| log.keys().next_back().map(|ts| (*author, *ts)))
-                .collect(),
-        )
+        let mut watermarks: BTreeMap<AuthorId, u64> = BTreeMap::new();
+        for (author, log) in self.placements.iter().chain(self.baked.iter()) {
+            if let Some(ts) = log.keys().next_back() {
+                let watermark = watermarks.entry(*author).or_insert(*ts);
+                *watermark = (*watermark).max(*ts);
+            }
+        }
+        TileSummary(watermarks)
     }
 
-    /// Placements newer than the requester's per-author watermark (all of an
-    /// author's log if the requester has never seen that author). `None` means
-    /// converged and MUST serialize to zero bytes.
+    /// Live and baked placements newer than the requester's per-author
+    /// watermark (all of an author's placements if the requester has never
+    /// seen that author, baked included, so a fresh peer reconstructs the full
+    /// state from the delta alone). `None` means converged and MUST serialize
+    /// to zero bytes.
     pub fn delta(&self, summary: &TileSummary) -> Option<TileDelta> {
         let placements: Vec<SignedPlacement> = self
             .placements
             .iter()
+            .chain(self.baked.iter())
             .flat_map(|(author, log)| {
                 let watermark = summary.0.get(author).copied();
                 log.values()
@@ -196,23 +263,36 @@ impl TileState {
 
     /// The greedy cooldown filter: per author, walk placements earliest-first
     /// and accept each one at least the author's tier cooldown after the last
-    /// accepted. A pure function of the placement set, so all peers agree.
-    /// Authors with no tier (not admitted) contribute nothing.
+    /// accepted. One chain runs over baked then live entries (baked timestamps
+    /// precede live ones), so eviction cannot launder a rapid-fire burst into
+    /// permanently visible pixels. A pure function of the placement set, so
+    /// all peers agree. Authors with no tier (not admitted) contribute
+    /// nothing.
     pub fn valid_placements(
         &self,
         tier_of: impl Fn(&AuthorId) -> Option<Tier>,
     ) -> Vec<&SignedPlacement> {
         let mut accepted = Vec::new();
-        for (author, log) in &self.placements {
+        let authors: std::collections::BTreeSet<&AuthorId> =
+            self.placements.keys().chain(self.baked.keys()).collect();
+        for author in authors {
             let Some(tier) = tier_of(author) else {
                 continue;
             };
             let cooldown = tier.tile_cooldown_secs();
+            let mut entries: Vec<(&u64, &SignedPlacement)> = self
+                .baked
+                .get(author)
+                .into_iter()
+                .flatten()
+                .chain(self.placements.get(author).into_iter().flatten())
+                .collect();
+            entries.sort_by_key(|(ts, _)| **ts);
             let mut last_accepted: Option<u64> = None;
-            for (ts, placement) in log {
+            for (ts, placement) in entries {
                 let ok = match last_accepted {
                     None => true,
-                    Some(last) => ts - last >= cooldown,
+                    Some(last) => *ts >= last.saturating_add(cooldown),
                 };
                 if ok {
                     accepted.push(placement);

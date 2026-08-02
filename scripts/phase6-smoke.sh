@@ -60,7 +60,7 @@ echo "== building the web app"
 # Fresh standalone instances have no predecessors: overwrite whatever
 # legacy_ids.json a previous release/phase7 run left behind, or the migration
 # probe stalls syncAll on GETs for instances this node has never seen.
-printf '{"registry":[],"chat":[],"tiles":[]}' > "$WEBGEN/legacy_ids.json"
+printf '{"registry":[],"chat":[],"tiles":[],"webapps":[]}' > "$WEBGEN/legacy_ids.json"
 (cd web && npm run build)
 
 echo "== packaging and publishing the webapp as a signed web container"

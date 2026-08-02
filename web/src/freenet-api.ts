@@ -21,6 +21,7 @@ import {
   UpdateNotification,
   DeltaUpdate,
 } from "@freenetorg/freenet-stdlib";
+import { RelatedContractsT } from "@freenetorg/freenet-stdlib/client-request";
 
 export function wsApiUrl(): URL {
   const override = new URLSearchParams(location.search).get("node");
@@ -175,8 +176,11 @@ export class FreenetClient {
   }
 
   /// Full-state PUT (upsert): peers holding state re-validate and merge it.
+  /// `relatedContracts` is a required field in the Put flatbuffer — leaving
+  /// it null makes pack() throw "field 8 must be set" (found live 2026-08-02);
+  /// an empty list is the correct "none" value.
   async putState(contract: ContractContainer, state: Uint8Array): Promise<void> {
-    await this.api.put(new PutRequest(contract, Array.from(state)));
+    await this.api.put(new PutRequest(contract, Array.from(state), new RelatedContractsT([])));
   }
 
   async updateWithDelta(key: ContractKey, delta: Uint8Array): Promise<void> {

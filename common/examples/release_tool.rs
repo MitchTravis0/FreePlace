@@ -384,6 +384,13 @@ fn merge_fixtures(out: &Path) {
         ),
         tile_case("cap-evicts-oldest", &full_log, vec![place(1, 200, 3, 90)]),
         tile_case(
+            "baked-layer-carries-through",
+            &(0..10)
+                .map(|i| place(1, 100 + i, (i % 16) as u8, 10 + 10 * u64::from(i)))
+                .collect::<Vec<_>>(),
+            vec![place(1, 200, 3, 120)],
+        ),
+        tile_case(
             "same-ts-slot-conflict",
             &[place(1, 1, 2, 10)],
             vec![place(1, 7, 8, 10)],
@@ -506,6 +513,45 @@ fn assert_tile_has(statefile: &Path, coord: u16, color: u8) {
     println!("assert-tile-has ok: coord {coord} color {color}");
 }
 
+/// Ops inspection: list a registry state's admission records.
+fn dump_registry(statefile: &Path) {
+    let bytes = fs::read(statefile).expect("read state file");
+    let state: RegistryState = common::from_cbor(&bytes).expect("state decodes as RegistryState");
+    for (author, record) in &state.identities {
+        println!(
+            "author={}.. tier={:?} admitted_ts={} nickname={:?}",
+            hex_encode(&author.0[..8]),
+            state.tier_of(author),
+            record.admitted_ts,
+            record
+                .nickname
+                .as_ref()
+                .map(|n| format!("{} (v{})", n.name, n.version)),
+        );
+    }
+}
+
+/// Ops inspection: list a tile state's placements (live and baked).
+fn dump_tile(statefile: &Path) {
+    let bytes = fs::read(statefile).expect("read state file");
+    let state: TileState = common::from_cbor(&bytes).expect("state decodes as TileState");
+    for (label, logs) in [("live", &state.placements), ("baked", &state.baked)] {
+        for (author, log) in logs {
+            let author_hex = hex_encode(&author.0[..8]);
+            for p in log.values() {
+                println!(
+                    "{label} author={author_hex}.. coord={} (x={}, y={}) color={} ts={}",
+                    p.coord,
+                    p.coord % 256,
+                    p.coord / 256,
+                    p.color,
+                    p.ts
+                );
+            }
+        }
+    }
+}
+
 fn main() {
     let args: Vec<String> = env::args().collect();
     let arg = |i: usize| -> &str { &args[i] };
@@ -557,6 +603,8 @@ fn main() {
         Some("apply-registry-delta") if args.len() == 5 => {
             apply_registry_delta(Path::new(arg(2)), Path::new(arg(3)), Path::new(arg(4)));
         }
+        Some("dump-registry") if args.len() == 3 => dump_registry(Path::new(arg(2))),
+        Some("dump-tile") if args.len() == 3 => dump_tile(Path::new(arg(2))),
         Some("assert-tile-has") if args.len() == 5 => {
             assert_tile_has(
                 Path::new(arg(2)),

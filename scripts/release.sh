@@ -139,7 +139,9 @@ ids_json() { # <file> -> JSON array, newest first
       sep=","
     done
   done
-  printf ']}'
+  # Displaced web-container ids feed the identity delegate's
+  # AdoptLegacyOrigin probe (newest first via ids_json's tac).
+  printf '],"webapps":%s}' "$(ids_json webapp.ids)"
 } > "$WEBGEN/legacy_ids.json"
 
 # ---- web build and reproducible archive ------------------------------------
