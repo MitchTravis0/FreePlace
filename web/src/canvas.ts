@@ -1,0 +1,269 @@
+// The canvas board: a 1024x1024 backing canvas the tiles are blitted into,
+// drawn to the visible canvas with zoom/pan, a pixel-snap hover cursor, and
+// click-to-place (a click is a pointer release that never travelled far).
+
+import { CANVAS_SIZE, EMPTY_PIXEL, TILE_SIZE } from "./state";
+
+/// The 2017 r/place palette; index order matters (contract colors are 0..15).
+export const PALETTE = [
+  "#ffffff",
+  "#e4e4e4",
+  "#888888",
+  "#222222",
+  "#ffa7d1",
+  "#e50000",
+  "#e59500",
+  "#a06a42",
+  "#e5d900",
+  "#94e044",
+  "#02be01",
+  "#00d3dd",
+  "#0083c7",
+  "#0000ea",
+  "#cf6ee4",
+  "#820080",
+];
+
+/// Empty pixels render as white, like an unpainted r/place board.
+const EMPTY_RGBA: [number, number, number] = [255, 255, 255];
+
+const MIN_ZOOM = 0.2;
+const MAX_ZOOM = 40;
+const CLICK_SLOP_PX = 4;
+/// How long a remote placement's highlight ring stays visible.
+const RECENT_ARRIVAL_MS = 1200;
+
+export function paletteRgb(index: number): [number, number, number] {
+  if (index === EMPTY_PIXEL || index >= PALETTE.length) return EMPTY_RGBA;
+  const hex = PALETTE[index];
+  return [
+    parseInt(hex.slice(1, 3), 16),
+    parseInt(hex.slice(3, 5), 16),
+    parseInt(hex.slice(5, 7), 16),
+  ];
+}
+
+export class CanvasView {
+  private backing = document.createElement("canvas");
+  private backingCtx: CanvasRenderingContext2D;
+  private ctx: CanvasRenderingContext2D;
+  private zoom = 1;
+  private panX = 0;
+  private panY = 0;
+  private hover: { x: number; y: number } | null = null;
+  private pointer: { id: number; startX: number; startY: number; moved: boolean } | null = null;
+  private drawQueued = false;
+  /// Remote placements still showing their fading highlight ring. Overlay
+  /// only: the backing store never holds non-palette colors.
+  private recent: { x: number; y: number; until: number }[] = [];
+  /// Template overlay drawn above the backing board, below the hover cursor.
+  private overlayImage: {
+    x: number;
+    y: number;
+    opacity: number;
+    canvas: HTMLCanvasElement;
+  } | null = null;
+  /// While true, board clicks and drags reposition the template overlay
+  /// (via onDragPlace) instead of panning or placing pixels.
+  private dragPlace = false;
+
+  constructor(
+    private readonly canvas: HTMLCanvasElement,
+    private readonly onPlace: (globalX: number, globalY: number) => void,
+    private readonly onHover: (pixel: { x: number; y: number } | null) => void = () => {},
+    private readonly onDragPlace: (globalX: number, globalY: number) => void = () => {},
+  ) {
+    this.backing.width = CANVAS_SIZE;
+    this.backing.height = CANVAS_SIZE;
+    this.backingCtx = this.backing.getContext("2d")!;
+    this.backingCtx.fillStyle = `rgb(${EMPTY_RGBA.join(",")})`;
+    this.backingCtx.fillRect(0, 0, CANVAS_SIZE, CANVAS_SIZE);
+    this.ctx = canvas.getContext("2d")!;
+
+    new ResizeObserver(() => this.resize()).observe(canvas.parentElement!);
+    this.resize();
+    this.fit();
+    this.bindEvents();
+  }
+
+  /// Blit one tile's derived palette indices into its quadrant.
+  renderTile(tileX: number, tileY: number, pixels: Uint8Array): void {
+    const image = this.backingCtx.createImageData(TILE_SIZE, TILE_SIZE);
+    for (let i = 0; i < pixels.length; i++) {
+      const [r, g, b] = paletteRgb(pixels[i]);
+      image.data[i * 4] = r;
+      image.data[i * 4 + 1] = g;
+      image.data[i * 4 + 2] = b;
+      image.data[i * 4 + 3] = 255;
+    }
+    this.backingCtx.putImageData(image, tileX * TILE_SIZE, tileY * TILE_SIZE);
+    this.requestDraw();
+  }
+
+  view(): { zoom: number; panX: number; panY: number } {
+    return { zoom: this.zoom, panX: this.panX, panY: this.panY };
+  }
+
+  /// Centre the viewport on a board pixel at the given zoom.
+  centerOn(x: number, y: number, zoom: number): void {
+    this.zoom = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, zoom));
+    this.panX = this.canvas.width / 2 - (x + 0.5) * this.zoom;
+    this.panY = this.canvas.height / 2 - (y + 0.5) * this.zoom;
+    this.requestDraw();
+  }
+
+  /// The board pixel at the viewport centre, clamped onto the canvas.
+  centerBoardPixel(): { x: number; y: number } {
+    const clamp = (v: number) => Math.min(CANVAS_SIZE - 1, Math.max(0, Math.floor(v)));
+    return {
+      x: clamp((this.canvas.width / 2 - this.panX) / this.zoom),
+      y: clamp((this.canvas.height / 2 - this.panY) / this.zoom),
+    };
+  }
+
+  /// Start a fading highlight ring at a board pixel (a remote arrival).
+  addRecent(globalX: number, globalY: number): void {
+    this.recent.push({ x: globalX, y: globalY, until: Date.now() + RECENT_ARRIVAL_MS });
+    this.requestDraw();
+  }
+
+  recentArrivals(): { x: number; y: number; until: number }[] {
+    const now = Date.now();
+    return this.recent.filter((r) => r.until > now);
+  }
+
+  setOverlay(
+    overlay: { x: number; y: number; opacity: number; canvas: HTMLCanvasElement } | null,
+  ): void {
+    this.overlayImage = overlay;
+    this.requestDraw();
+  }
+
+  setDragPlace(enabled: boolean): void {
+    this.dragPlace = enabled;
+  }
+
+  private resize(): void {
+    const parent = this.canvas.parentElement!;
+    if (this.canvas.width !== parent.clientWidth || this.canvas.height !== parent.clientHeight) {
+      this.canvas.width = parent.clientWidth;
+      this.canvas.height = parent.clientHeight;
+    }
+    this.requestDraw();
+  }
+
+  /// Fit the whole board in the viewport, centred.
+  private fit(): void {
+    const scale =
+      Math.min(this.canvas.width / CANVAS_SIZE, this.canvas.height / CANVAS_SIZE) * 0.95 || 1;
+    this.zoom = Math.max(MIN_ZOOM, scale);
+    this.panX = (this.canvas.width - CANVAS_SIZE * this.zoom) / 2;
+    this.panY = (this.canvas.height - CANVAS_SIZE * this.zoom) / 2;
+    this.requestDraw();
+  }
+
+  private bindEvents(): void {
+    this.canvas.addEventListener("wheel", (event) => {
+      event.preventDefault();
+      const factor = Math.pow(1.0015, -event.deltaY);
+      const next = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, this.zoom * factor));
+      const rect = this.canvas.getBoundingClientRect();
+      const mx = event.clientX - rect.left;
+      const my = event.clientY - rect.top;
+      // Keep the board point under the cursor fixed while zooming.
+      this.panX = mx - ((mx - this.panX) / this.zoom) * next;
+      this.panY = my - ((my - this.panY) / this.zoom) * next;
+      this.zoom = next;
+      this.hover = this.pixelAt(mx, my);
+      this.onHover(this.hover);
+      this.requestDraw();
+    });
+
+    this.canvas.addEventListener("pointerdown", (event) => {
+      this.canvas.setPointerCapture(event.pointerId);
+      this.pointer = { id: event.pointerId, startX: event.clientX, startY: event.clientY, moved: false };
+    });
+
+    this.canvas.addEventListener("pointermove", (event) => {
+      const rect = this.canvas.getBoundingClientRect();
+      this.hover = this.pixelAt(event.clientX - rect.left, event.clientY - rect.top);
+      this.onHover(this.hover);
+      if (this.pointer && this.pointer.id === event.pointerId) {
+        const dx = event.clientX - this.pointer.startX;
+        const dy = event.clientY - this.pointer.startY;
+        if (this.pointer.moved || Math.hypot(dx, dy) > CLICK_SLOP_PX) {
+          this.pointer.moved = true;
+          if (this.dragPlace) {
+            if (this.hover) this.onDragPlace(this.hover.x, this.hover.y);
+          } else {
+            this.panX += event.movementX;
+            this.panY += event.movementY;
+          }
+        }
+      }
+      this.requestDraw();
+    });
+
+    this.canvas.addEventListener("pointerup", (event) => {
+      const pointer = this.pointer;
+      this.pointer = null;
+      if (!pointer || pointer.id !== event.pointerId || pointer.moved) return;
+      const rect = this.canvas.getBoundingClientRect();
+      const pixel = this.pixelAt(event.clientX - rect.left, event.clientY - rect.top);
+      if (pixel) (this.dragPlace ? this.onDragPlace : this.onPlace)(pixel.x, pixel.y);
+    });
+
+    this.canvas.addEventListener("pointerleave", () => {
+      this.hover = null;
+      this.onHover(null);
+      this.requestDraw();
+    });
+  }
+
+  private pixelAt(canvasX: number, canvasY: number): { x: number; y: number } | null {
+    const x = Math.floor((canvasX - this.panX) / this.zoom);
+    const y = Math.floor((canvasY - this.panY) / this.zoom);
+    if (x < 0 || y < 0 || x >= CANVAS_SIZE || y >= CANVAS_SIZE) return null;
+    return { x, y };
+  }
+
+  private requestDraw(): void {
+    if (this.drawQueued) return;
+    this.drawQueued = true;
+    requestAnimationFrame(() => {
+      this.drawQueued = false;
+      this.draw();
+    });
+  }
+
+  private draw(): void {
+    this.ctx.setTransform(1, 0, 0, 1, 0, 0);
+    this.ctx.fillStyle = "#1a1a1f";
+    this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+    this.ctx.imageSmoothingEnabled = false;
+    this.ctx.setTransform(this.zoom, 0, 0, this.zoom, this.panX, this.panY);
+    this.ctx.drawImage(this.backing, 0, 0);
+    if (this.overlayImage) {
+      this.ctx.globalAlpha = this.overlayImage.opacity;
+      this.ctx.drawImage(this.overlayImage.canvas, this.overlayImage.x, this.overlayImage.y);
+      this.ctx.globalAlpha = 1;
+    }
+    const now = Date.now();
+    this.recent = this.recent.filter((r) => r.until > now);
+    for (const r of this.recent) {
+      // t runs 1 -> 0 over the ring's lifetime: fade out while expanding.
+      const t = (r.until - now) / RECENT_ARRIVAL_MS;
+      const pad = (1 - t) * 2;
+      this.ctx.lineWidth = 2 / this.zoom;
+      this.ctx.strokeStyle = `rgba(80, 160, 255, ${t.toFixed(3)})`;
+      this.ctx.strokeRect(r.x - pad, r.y - pad, 1 + 2 * pad, 1 + 2 * pad);
+    }
+    if (this.hover && this.zoom >= 4) {
+      this.ctx.lineWidth = 2 / this.zoom;
+      this.ctx.strokeStyle = "#000000";
+      this.ctx.strokeRect(this.hover.x, this.hover.y, 1, 1);
+    }
+    // Keep animating (and eventually pruning) while rings are alive.
+    if (this.recent.length > 0) this.requestDraw();
+  }
+}

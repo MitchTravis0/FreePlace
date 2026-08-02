@@ -1,0 +1,21 @@
+{
+  "name": "freeplace-web",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "test:e2e": "playwright test"
+  },
+  "dependencies": {
+    "@freenetorg/freenet-stdlib": "^0.2.0",
+    "@noble/hashes": "^2.2.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.54",
+    "typescript": "^5.5",
+    "vite": "^6.0"
+  }
+}

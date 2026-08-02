@@ -1,0 +1,20 @@
+// FreePlace facade loader. Served from the stable facade contract; forwards
+// the browser to the current web container. {{CURRENT_APP_ID}} is substituted
+// by scripts/release.sh at pointer-flip time.
+//
+// The gateway shell always loads iframe content with ?__sandbox=1, so "am I
+// framed" is the only sandbox signal here. Framed: ask the shell to navigate
+// the top window (loading the app's own shell page inside this iframe would
+// be blocked by its frame-ancestors policy), with a raw in-iframe fallback if
+// the shell ignores the message. Unframed (dev): plain redirect.
+var CURRENT_APP_ID = "{{CURRENT_APP_ID}}";
+var target = "/v1/contract/web/" + CURRENT_APP_ID + "/";
+
+if (window.parent !== window) {
+  window.parent.postMessage({ __freenet_shell__: true, type: "navigate", href: target }, "*");
+  setTimeout(function () {
+    location.replace(target + "?__sandbox=1");
+  }, 1500);
+} else {
+  location.replace(target);
+}

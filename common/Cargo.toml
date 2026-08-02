@@ -1,0 +1,22 @@
+[package]
+name = "common"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+serde = { workspace = true }
+ed25519-dalek = { version = "2", features = ["serde"] }
+ciborium = "0.2"
+blake3 = "1"
+
+[build-dependencies]
+freenet-migrate-build = "0.2.0"
+
+[dev-dependencies]
+proptest = "1"
+hex = "0.4"
+# The phase3 smoke example decodes fdev's base58 contract ids.
+bs58 = "0.5"
+# The release_tool example reuses the migration hash-guard and registry parser.
+freenet-migrate-build = "0.2.0"

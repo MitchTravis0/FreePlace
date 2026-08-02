@@ -1,0 +1,54 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # rust-toolchain.toml pins the toolchain; keep it matched to the machine
+      # that produces published WASM (plan.md risks).
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+          components: clippy, rustfmt
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+            contracts/*/target
+            delegates/*/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Format
+        run: make fmt-check
+      - name: Clippy
+        run: make clippy
+      - name: Constants drift (Rust vs TS mirror)
+        run: make check-constants
+      - name: Tests
+        run: make test
+      - name: Build contract and delegate WASMs
+        run: make build-contracts build-delegates
+      - name: Migration guard
+        run: ./scripts/check-migration.sh
+
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install
+        run: cd web && npm ci
+      - name: Typecheck and build
+        run: cd web && npm run build

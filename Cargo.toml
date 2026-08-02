@@ -1,0 +1,20 @@
+[workspace]
+members = ["common"]
+# Contract and delegate crates are deliberately excluded: each has its own
+# Cargo.lock with =x.y.z pins so a workspace `cargo update` cannot silently
+# change their WASM bytes and re-key the contracts (see build-system.md,
+# "Per-contract lockfile isolation").
+exclude = [
+    "contracts/registry-contract",
+    "contracts/tile-contract",
+    "contracts/chat-contract",
+    "contracts/facade-contract",
+    "delegates/identity-delegate",
+]
+resolver = "2"
+
+[workspace.dependencies]
+freenet-stdlib = { version = "0.8", features = ["contract"] }
+freenet-scaffold = "0.2.2"
+freenet-scaffold-macro = "0.2.2"
+serde = { version = "1", features = ["derive"] }

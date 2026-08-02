@@ -1,0 +1,39 @@
+[package]
+name = "freeplace-registry-contract"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# Empty stanza so this crate is its own workspace root; fdev's workspace walk
+# stops here and the crate keeps its own Cargo.lock.
+[workspace]
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+# The #[contract] macro gates the WASM FFI exports behind this feature;
+# without it the built WASM has no entry points.
+default = ["freenet-main-contract"]
+freenet-main-contract = []
+
+[dependencies]
+common = { path = "../../common" }
+freenet-stdlib = { version = "=0.8.5", features = ["contract"] }
+ed25519-dalek = { version = "2", features = ["serde"] }
+ciborium = "0.2"
+serde = { version = "1", features = ["derive"] }
+ghostkey_lib = "=0.2.0"
+# ghostkey_lib links getrandom via rand; wasm32-unknown-unknown needs the
+# "custom" feature to compile (a failing stub is registered in lib.rs —
+# verification never draws entropy).
+getrandom = { version = "0.2", features = ["custom"] }
+
+[dev-dependencies]
+rand_core = { version = "0.6", features = ["getrandom"] }
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"

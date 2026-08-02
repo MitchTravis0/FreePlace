@@ -1,0 +1,31 @@
+[package]
+name = "freeplace-facade-contract"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# Empty stanza so this crate is its own workspace root; fdev's workspace walk
+# stops here and the crate keeps its own Cargo.lock.
+[workspace]
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+# The #[contract] macro gates the WASM FFI exports behind this feature;
+# without it the built WASM has no entry points.
+default = ["freenet-main-contract"]
+freenet-main-contract = []
+
+[dependencies]
+common = { path = "../../common" }
+freenet-stdlib = { version = "=0.8.5", features = ["contract"] }
+
+[dev-dependencies]
+ed25519-dalek = { version = "2", features = ["serde"] }
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"

@@ -1,0 +1,7 @@
+# Append-only registry of every previous registry-contract WASM build that
+# shipped (key = blake3(blake3(wasm) || params)). A WASM change re-keys the
+# contract and strands state under the old key, so the OUTGOING code hash MUST
+# be recorded here before the new WASM ships; scripts/check-migration.sh fails
+# the preflight otherwise, and the UI's backward probe uses the release
+# manifest (published/) to carry state forward. No predecessors yet: nothing
+# has shipped before the v1 release.

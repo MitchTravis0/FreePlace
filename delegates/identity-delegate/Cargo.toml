@@ -1,0 +1,36 @@
+[package]
+name = "freeplace-identity-delegate"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# Empty stanza so this crate is its own workspace root; fdev's workspace walk
+# stops here and the crate keeps its own Cargo.lock.
+[workspace]
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+# The #[delegate] macro expands cfg(feature = "trace") from stdlib's feature
+# set into this crate; register it so unexpected_cfgs stays quiet.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("trace"))'] }
+
+[features]
+# The #[delegate] macro gates the WASM FFI exports behind this feature;
+# without it the built WASM has no entry points.
+default = ["freenet-main-delegate"]
+freenet-main-delegate = []
+
+[dependencies]
+common = { path = "../../common" }
+# There is no "delegate" feature in stdlib 0.8; "contract" gates the WASM
+# guest support (memory helpers, into_raw) that the #[delegate] macro needs.
+freenet-stdlib = { version = "=0.8.5", features = ["contract"] }
+ed25519-dalek = { version = "2", features = ["serde"] }
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"

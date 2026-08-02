@@ -1,0 +1,6 @@
+# rustc version affects contract WASM bytes; CI must build with this exact
+# toolchain for the byte-equality check to hold. (Local dev without rustup
+# ignores this file; keep it in sync with the machine that publishes.)
+[toolchain]
+channel = "1.97.1"
+targets = ["wasm32-unknown-unknown"]

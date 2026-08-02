@@ -1,0 +1,640 @@
+/* All styles are local — the gateway CSP blocks CDN assets, so nothing may
+   reference an external URL. */
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  background: #131317;
+  color: #e8e8ee;
+}
+
+#app {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+header {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 8px 16px;
+  background: #1c1c22;
+  border-bottom: 1px solid #2c2c34;
+}
+
+header h1 {
+  font-size: 18px;
+  margin: 0;
+  letter-spacing: 0.5px;
+}
+
+.status-chip {
+  font-size: 12px;
+  color: #9a9aa6;
+}
+
+.identity-chip {
+  cursor: pointer;
+}
+
+.identity-chip:hover {
+  color: #e8e8ee;
+}
+
+.nickname-form {
+  display: flex;
+  gap: 4px;
+}
+
+.nickname-form.hidden {
+  display: none;
+}
+
+.nickname-form input {
+  width: 120px;
+  background: #101014;
+  color: #e8e8ee;
+  border: 1px solid #2c2c34;
+  border-radius: 6px;
+  padding: 4px 8px;
+  font-size: 12px;
+}
+
+.cooldown {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+  font-size: 14px;
+}
+
+.cooldown.ready {
+  color: #7ddf7d;
+}
+
+.cooldown.shake {
+  animation: cooldown-shake 0.4s;
+}
+
+@keyframes cooldown-shake {
+  0%,
+  100% {
+    transform: translateX(0);
+  }
+  25% {
+    transform: translateX(-4px);
+  }
+  50% {
+    transform: translateX(4px);
+  }
+  75% {
+    transform: translateX(-2px);
+  }
+}
+
+.faq-button {
+  background: none;
+  border: 1px solid #2c2c34;
+  border-radius: 6px;
+  color: #9a9aa6;
+  font-size: 12px;
+  padding: 4px 10px;
+  cursor: pointer;
+}
+
+.faq-button:hover {
+  color: #e8e8ee;
+  border-color: #4a4a56;
+}
+
+.faq-button.active {
+  color: #8ab4f8;
+  border-color: #8ab4f8;
+}
+
+/* Only shown in the narrow layout, where the chat sidebar is an overlay. */
+.chat-toggle {
+  display: none;
+  align-items: center;
+  background: none;
+  border: 1px solid #2c2c34;
+  border-radius: 6px;
+  color: #9a9aa6;
+  font-size: 12px;
+  padding: 4px 10px;
+  cursor: pointer;
+}
+
+.chat-toggle:hover {
+  color: #e8e8ee;
+  border-color: #4a4a56;
+}
+
+.unread-badge {
+  background: #e50000;
+  color: #ffffff;
+  border-radius: 8px;
+  padding: 1px 5px;
+  margin-left: 6px;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.unread-badge:empty {
+  display: none;
+}
+
+.faq-card {
+  max-height: 85vh;
+  overflow-y: auto;
+}
+
+.content {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+.board-area {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+}
+
+.board-area canvas {
+  display: block;
+  cursor: crosshair;
+  touch-action: none;
+}
+
+.palette {
+  position: absolute;
+  bottom: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 4px;
+  padding: 6px;
+  background: rgba(20, 20, 26, 0.9);
+  border: 1px solid #2c2c34;
+  border-radius: 8px;
+}
+
+.palette button {
+  width: 26px;
+  height: 26px;
+  border: 2px solid transparent;
+  border-radius: 4px;
+  padding: 0;
+  cursor: pointer;
+}
+
+.palette button.selected {
+  border-color: #ffffff;
+}
+
+/* Replay bar (Phase 12): banner + play/pause + scrubber over the board. */
+.replay-bar {
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 12px;
+  background: rgba(20, 20, 26, 0.95);
+  border: 1px solid #2c2c34;
+  border-radius: 8px;
+  max-width: calc(100vw - 24px);
+}
+
+.replay-bar.hidden {
+  display: none;
+}
+
+.replay-banner {
+  color: #ffe8b3;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  white-space: nowrap;
+}
+
+.replay-bar button {
+  background: none;
+  border: 1px solid #2c2c34;
+  border-radius: 6px;
+  color: #9a9aa6;
+  font-size: 12px;
+  padding: 3px 10px;
+  cursor: pointer;
+}
+
+.replay-bar button:hover {
+  color: #e8e8ee;
+  border-color: #4a4a56;
+}
+
+.replay-bar input[type="range"] {
+  width: clamp(120px, 30vw, 280px);
+}
+
+/* Template overlay panel (Phase 11). "template-" because .overlay is the
+   modal backdrop class. */
+.template-panel {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+  max-width: calc(100vw - 24px);
+}
+
+.template-panel .panel-toggle {
+  background: rgba(20, 20, 26, 0.9);
+  border: 1px solid #2c2c34;
+  border-radius: 6px;
+  color: #9a9aa6;
+  font-size: 12px;
+  padding: 4px 10px;
+  cursor: pointer;
+}
+
+.template-panel .panel-toggle:hover {
+  color: #e8e8ee;
+  border-color: #4a4a56;
+}
+
+.template-panel .panel-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 240px;
+  max-width: 100%;
+  padding: 10px 12px;
+  background: rgba(20, 20, 26, 0.95);
+  border: 1px solid #2c2c34;
+  border-radius: 8px;
+  font-size: 12.5px;
+}
+
+.template-panel .panel-body.hidden {
+  display: none;
+}
+
+.template-panel .panel-body p {
+  margin: 0;
+}
+
+.template-panel input[type="file"] {
+  font-size: 12px;
+  max-width: 100%;
+}
+
+.template-panel .anchor-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.template-panel .anchor-row input[type="number"] {
+  width: 60px;
+  background: #101014;
+  color: #e8e8ee;
+  border: 1px solid #2c2c34;
+  border-radius: 6px;
+  padding: 3px 6px;
+  font-size: 12px;
+}
+
+.template-panel .anchor-row button,
+.template-panel [data-testid="btn-overlay-clear"] {
+  background: none;
+  border: 1px solid #2c2c34;
+  border-radius: 6px;
+  color: #9a9aa6;
+  font-size: 12px;
+  padding: 3px 8px;
+  cursor: pointer;
+}
+
+.template-panel .anchor-row button:hover,
+.template-panel [data-testid="btn-overlay-clear"]:hover {
+  color: #e8e8ee;
+  border-color: #4a4a56;
+}
+
+.template-panel .anchor-row button.drag-active {
+  color: #8ab4f8;
+  border-color: #8ab4f8;
+}
+
+.template-panel .slider-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.template-panel .slider-row input {
+  flex: 1;
+}
+
+.template-panel .diff-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.template-panel .diff-row span {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+  color: #9a9aa6;
+}
+
+.chat {
+  display: flex;
+  flex-direction: column;
+  width: 300px;
+  border-left: 1px solid #2c2c34;
+  background: #17171c;
+}
+
+.chat h2 {
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: #9a9aa6;
+  margin: 0;
+  padding: 10px 12px;
+  border-bottom: 1px solid #2c2c34;
+}
+
+.chat-messages {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px 12px;
+  font-size: 13px;
+}
+
+.chat-message {
+  margin-bottom: 6px;
+  overflow-wrap: anywhere;
+}
+
+.chat-message .nick {
+  color: #8ab4f8;
+  font-weight: 600;
+  margin-right: 6px;
+}
+
+.chat-message.mine {
+  background: rgba(51, 85, 221, 0.14);
+  border-radius: 4px;
+  padding: 2px 4px;
+  margin-left: -4px;
+}
+
+.chat-message .msg-time {
+  color: #6a6a76;
+  font-size: 11px;
+  margin-right: 6px;
+}
+
+.coord-link {
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  color: #8ab4f8;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.share-spot {
+  background: none;
+  border: 1px solid #2c2c34;
+  border-radius: 6px;
+  color: #9a9aa6;
+  padding: 4px 8px;
+  cursor: pointer;
+}
+
+.share-spot:hover {
+  color: #e8e8ee;
+  border-color: #4a4a56;
+}
+
+.chat-form {
+  display: flex;
+  gap: 6px;
+  padding: 8px;
+  border-top: 1px solid #2c2c34;
+}
+
+.chat-form input {
+  flex: 1;
+  background: #101014;
+  color: #e8e8ee;
+  border: 1px solid #2c2c34;
+  border-radius: 6px;
+  padding: 6px 8px;
+}
+
+button.primary {
+  background: #3355dd;
+  color: #ffffff;
+  border: none;
+  border-radius: 6px;
+  padding: 6px 12px;
+  cursor: pointer;
+}
+
+button.primary:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.overlay {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(8, 8, 12, 0.75);
+}
+
+.overlay.hidden,
+.toast.hidden,
+.banner.hidden,
+.pixel-tooltip.hidden {
+  display: none;
+}
+
+.pixel-tooltip {
+  position: absolute;
+  pointer-events: none;
+  background: rgba(20, 20, 26, 0.95);
+  border: 1px solid #2c2c34;
+  border-radius: 6px;
+  padding: 4px 8px;
+  font-size: 12px;
+  white-space: nowrap;
+  z-index: 2;
+}
+
+.coords-chip {
+  position: absolute;
+  left: 12px;
+  bottom: 12px;
+  padding: 4px 8px;
+  background: rgba(20, 20, 26, 0.9);
+  border: 1px solid #2c2c34;
+  border-radius: 6px;
+  color: #9a9aa6;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+}
+
+.coords-chip:empty {
+  display: none;
+}
+
+.onboarding-card {
+  width: min(440px, 92vw);
+  background: #1c1c22;
+  border: 1px solid #2c2c34;
+  border-radius: 12px;
+  padding: 20px 24px;
+}
+
+.onboarding-card h2 {
+  margin-top: 0;
+}
+
+.onboarding-card section {
+  margin-top: 18px;
+  padding-top: 12px;
+  border-top: 1px solid #2c2c34;
+}
+
+.onboarding-card h3 {
+  margin: 0 0 6px;
+  font-size: 14px;
+}
+
+.onboarding-card label {
+  display: block;
+  font-size: 13px;
+  margin: 12px 0 4px;
+}
+
+.onboarding-card input {
+  width: 100%;
+  background: #101014;
+  color: #e8e8ee;
+  border: 1px solid #2c2c34;
+  border-radius: 6px;
+  padding: 6px 8px;
+}
+
+.onboarding-card progress {
+  width: 100%;
+}
+
+.muted {
+  color: #9a9aa6;
+  font-size: 12.5px;
+}
+
+.disclosure {
+  color: #b8a869;
+  font-size: 12.5px;
+}
+
+.toast {
+  position: fixed;
+  bottom: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: #5d2430;
+  color: #ffd7de;
+  border: 1px solid #8a3446;
+  border-radius: 8px;
+  padding: 10px 16px;
+  font-size: 13px;
+  max-width: 80vw;
+}
+
+.banner {
+  padding: 8px 16px;
+  background: #4a3a17;
+  color: #ffe8b3;
+  font-size: 13px;
+}
+
+/* Narrow desktop windows and phones: the fixed 300px sidebar would crush the
+   board, so chat becomes a toggled full-height overlay and the palette grows
+   to comfortable (44px) targets behind a horizontal scroll. */
+@media (max-width: 720px) {
+  header {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .chat-toggle {
+    display: inline-flex;
+    /* The toggle is the drawer's open/close control: keep it above the open
+       drawer (z-index 5), wherever header wrapping puts it. */
+    position: relative;
+    z-index: 6;
+  }
+
+  .chat {
+    position: fixed;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: min(320px, 88vw);
+    display: none;
+    box-shadow: -8px 0 24px rgba(0, 0, 0, 0.5);
+    z-index: 5;
+  }
+
+  .chat.open {
+    display: flex;
+  }
+
+  .palette {
+    max-width: calc(100vw - 16px);
+    overflow-x: auto;
+  }
+
+  .palette button {
+    width: 44px;
+    height: 44px;
+    flex: 0 0 auto;
+  }
+
+  /* Keep the coordinate readout clear of the (now near full-width) palette. */
+  .coords-chip {
+    bottom: 76px;
+  }
+
+  .onboarding-card {
+    max-height: 90vh;
+    overflow-y: auto;
+    padding: 16px;
+  }
+}

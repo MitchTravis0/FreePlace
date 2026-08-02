@@ -1,0 +1,3 @@
+# Append-only registry of every previous chat-contract WASM build that
+# shipped. See contracts/registry-contract/legacy_contracts.toml for the
+# rules. No predecessors yet: nothing has shipped before the v1 release.

@@ -1,0 +1,28 @@
+#!/bin/bash
+set -euo pipefail
+
+# No .wasm may be committed outside published-contract/. A stray .wasm is a
+# forgotten build artifact or an unnoticed snapshot drift; both re-key state.
+stray=$(git diff --cached --name-only --diff-filter=A \
+        | grep -E '\.wasm$' \
+        | grep -v '^published-contract/' || true)
+if [ -n "$stray" ]; then
+    echo "error: .wasm files staged outside published-contract/:" >&2
+    echo "$stray" >&2
+    echo "Either move them to published-contract/ (with a matching" >&2
+    echo "contract-id.txt update) or add them to .gitignore." >&2
+    exit 1
+fi
+
+# If published-contract/*.wasm changed, the matching *-id.txt must change too.
+wasm_changed=$(git diff --cached --name-only \
+               | grep -E '^published-contract/.*\.wasm$' || true)
+if [ -n "$wasm_changed" ]; then
+    id_staged=$(git diff --cached --name-only \
+                | grep -E '^published-contract/.*-id\.txt$' || true)
+    if [ -z "$id_staged" ]; then
+        echo "error: published-contract/*.wasm changed but no *-id.txt is staged." >&2
+        echo "Snapshot the new contract ID alongside the WASM bytes." >&2
+        exit 1
+    fi
+fi
