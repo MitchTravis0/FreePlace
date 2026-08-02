@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Phase 6 exit check, iso tier: publish the registry, all 16 tiles, the chat
-# room, and the identity delegate to the local dev node; build the web app
+# Phase 6 exit check, iso tier: publish the registry, all 16 tiles, and the
+# chat room to the local dev node (NOT the identity delegate — the UI must
+# register its bundled copy itself, as on any user's node); build the web app
 # against their ids; package and publish it as a gateway-served webapp (the
 # facade stub accepts any state and serves as the interim web container until
 # Phase 7); then drive the real UI through the gateway iframe with
@@ -51,10 +52,13 @@ printf '%s]' "${TILES_JSON%,}" > "$WEBGEN/tiles.json"
 cp "$WEBGEN/tile_params_bytes-0-0.json" "$WEBGEN/tile_params_bytes.json"
 printf '%s' "$(contract_id "$TILE_WASM" "$OUT/tile-params-0-0.bin")" > "$WEBGEN/tile_contract_id.txt"
 
-echo "== publishing registry, chat, and the identity delegate"
+echo "== publishing registry and chat"
 fdev -p "$PORT" publish --code "$REG_WASM" --parameters "$OUT/registry-params.bin" contract --state "$OUT/registry-state.bin"
 fdev -p "$PORT" publish --code "$CHAT_WASM" --parameters "$OUT/chat-params.bin" contract --state "$OUT/chat-state.bin"
-fdev -p "$PORT" publish --code "$OUT/identity-delegate-versioned.bin" delegate
+# The identity delegate is deliberately NOT fdev-published here: a user's
+# node never gets one that way (delegates do not propagate), so this tier
+# proves the UI registers its bundled delegate WASM itself. The
+# fdev-published path is covered by scripts/phase5-smoke.sh.
 
 echo "== building the web app"
 # Fresh standalone instances have no predecessors: overwrite whatever

@@ -11,12 +11,24 @@ function readOrDefault(filename: string, fallback: string): string {
   return existsSync(filePath) ? readFileSync(filePath, "utf-8").trim() : fallback;
 }
 
+// Binary asset embedded as base64. Inlined (not fetched at runtime): the
+// gateway iframe has an opaque origin, so a runtime fetch of an asset URL is
+// a cross-origin request the gateway may reject.
+function readBase64OrEmpty(filename: string): string {
+  const filePath = resolve(__dirname, ".gen", filename);
+  return existsSync(filePath) ? readFileSync(filePath).toString("base64") : "";
+}
+
 // base "./" is required: the gateway serves the app from an iframe at a
 // nested path, so absolute asset URLs break in production.
 export default defineConfig({
   base: "./",
   define: {
     __IDENTITY_DELEGATE_KEY_BYTES__: readOrDefault("identity_delegate_key_bytes.json", "[]"),
+    // Raw delegate WASM: the UI registers it on the user's node at startup
+    // (delegates never propagate over the network, so a node that has not
+    // run `fdev publish delegate` locally would otherwise never answer).
+    __IDENTITY_DELEGATE_WASM_B64__: JSON.stringify(readBase64OrEmpty("identity_delegate.wasm")),
     __IDENTITY_DELEGATE_CODE_HASH_BYTES__: readOrDefault(
       "identity_delegate_code_hash_bytes.json",
       "[]",

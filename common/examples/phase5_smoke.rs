@@ -8,6 +8,8 @@
 //! delegate key/code-hash byte arrays (key = blake3(code_hash || params) with
 //! empty params), the versioned delegate file `fdev publish delegate` expects
 //! (u64 BE API version 0, then the 32-byte blake3 code hash, then the WASM),
+//! a copy of the raw WASM for the web build (the UI registers the delegate
+//! on the user's node itself; delegates never propagate over the network),
 //! and placeholder ghostkeys-delegate addresses (absent on the dev node, so
 //! the ghost key flow exercises its delegate-unavailable state).
 
@@ -107,6 +109,9 @@ fn delegate_keys(wasm: &Path, webgen: &Path, versioned_out: &Path) {
         "identity_delegate_key_bytes.json",
         json_byte_array(&delegate_key),
     );
+    // Raw WASM for the web bundle: every user's node needs the delegate
+    // registered locally, and only the UI reaches those nodes.
+    write(webgen, "identity_delegate.wasm", wasm_bytes);
 
     // No ghostkeys delegate exists on the isolated dev node; a well-formed but
     // unregistered address drives the flow into its "unavailable" state.

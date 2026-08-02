@@ -5,6 +5,8 @@
 // production ones.
 
 import { cborDecode, CborValue, mapGet } from "./cbor";
+import { base64ToBytes, registerDelegate } from "./delegate-api";
+import { IDENTITY_DELEGATE_WASM_B64 } from "./delegate-wasm";
 import { contractKeyFromId, FreenetClient } from "./freenet-api";
 import { proveGhostkey } from "./ghostkey";
 import { asByteArray, IdentityClient } from "./identity";
@@ -69,6 +71,16 @@ const client = new FreenetClient({
 const identity = new IdentityClient(client, IDENTITY_DELEGATE);
 
 async function loadIdentity(): Promise<void> {
+  // Mirror the real app: hand the node the delegate WASM first (idempotent;
+  // the phase 5 node also has it fdev-published, so this exercises the
+  // re-registration path). Tolerated on failure like RealBackend.
+  if (IDENTITY_DELEGATE_WASM_B64 !== "") {
+    try {
+      await registerDelegate(client, IDENTITY_DELEGATE, base64ToBytes(IDENTITY_DELEGATE_WASM_B64));
+    } catch (err) {
+      console.info(`phase5: delegate registration failed: ${err}`);
+    }
+  }
   try {
     const vk = await identity.getIdentity();
     setStatus("identity-vk", hex(vk));

@@ -5,6 +5,8 @@
 // so tests can simulate remote peers.
 
 import { ContractContainer, ContractKey } from "@freenetorg/freenet-stdlib";
+import { base64ToBytes, registerDelegate } from "./delegate-api";
+import { IDENTITY_DELEGATE_WASM_B64 } from "./delegate-wasm";
 import { contractKeyFromId, FreenetClient } from "./freenet-api";
 import { GhostkeyOutcome, proveGhostkey } from "./ghostkey";
 import { IdentityClient } from "./identity";
@@ -218,6 +220,7 @@ export class RealBackend implements Backend {
   private chatSeq = { ts: 0, seq: 0 };
   private admittedAt: number | null = null;
   private putFallback: PutFallbackCaches = { containers: new Map(), putFirst: new Set() };
+  private delegateRegistered = false;
   private disposed = false;
   /// instance-id hex -> route for subscription notifications.
   private routes = new Map<
@@ -234,6 +237,11 @@ export class RealBackend implements Backend {
       chatId: string;
       chatParams: Uint8Array;
       identityDelegate: { keyBytes: number[]; codeHashBytes: number[] };
+      /// Raw delegate WASM (base64, "" when the build had none): registered
+      /// on the node at startup, because delegates never propagate over the
+      /// network — a node that never ran `fdev publish delegate` locally
+      /// would otherwise ignore every identity request.
+      identityDelegateWasmB64: string;
       ghostkeysDelegate: { keyBytes: number[]; codeHashBytes: number[] };
       legacyIds: LegacyIds;
     },
@@ -267,9 +275,28 @@ export class RealBackend implements Backend {
   }
 
   private async onOpen(): Promise<void> {
+    await this.ensureIdentityDelegate();
     this.myVk = await this.identity.adoptOrGetIdentity(this.config.legacyIds.webapps ?? []);
     await this.syncAll();
     this.events.onConnection("connected");
+  }
+
+  /// Registration is idempotent node-side and skipped after the first
+  /// success this page load. Failure is tolerated: a node provisioned by
+  /// `fdev publish delegate` answers anyway, and a genuinely missing
+  /// delegate surfaces downstream as the existing timeout error.
+  private async ensureIdentityDelegate(): Promise<void> {
+    if (this.delegateRegistered || this.config.identityDelegateWasmB64 === "") return;
+    try {
+      await registerDelegate(
+        this.client,
+        this.config.identityDelegate,
+        base64ToBytes(this.config.identityDelegateWasmB64),
+      );
+      this.delegateRegistered = true;
+    } catch (err) {
+      console.info(`freeplace identity: delegate registration failed: ${err}`);
+    }
   }
 
   /// The SDK does not auto-reconnect; recreate the socket and re-sync. Full
@@ -824,6 +851,7 @@ export function createBackend(events: BackendEvents): Backend {
       keyBytes: __IDENTITY_DELEGATE_KEY_BYTES__,
       codeHashBytes: __IDENTITY_DELEGATE_CODE_HASH_BYTES__,
     },
+    identityDelegateWasmB64: IDENTITY_DELEGATE_WASM_B64,
     ghostkeysDelegate: {
       keyBytes: __GHOSTKEYS_DELEGATE_KEY_BYTES__,
       codeHashBytes: __GHOSTKEYS_DELEGATE_CODE_HASH_BYTES__,

@@ -5,6 +5,9 @@
 // hash bytes are DIFFERENT values: key = blake3(code_hash || params),
 // code_hash = blake3(wasm bytes).
 declare const __IDENTITY_DELEGATE_KEY_BYTES__: number[];
+// Raw identity-delegate WASM (base64, "" when not built yet); registered on
+// the user's node at startup because delegates never propagate on their own.
+declare const __IDENTITY_DELEGATE_WASM_B64__: string;
 declare const __IDENTITY_DELEGATE_CODE_HASH_BYTES__: number[];
 declare const __GHOSTKEYS_DELEGATE_KEY_BYTES__: number[];
 declare const __GHOSTKEYS_DELEGATE_CODE_HASH_BYTES__: number[];

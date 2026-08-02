@@ -19,6 +19,8 @@
 //! a placement delta for the smoke identity.
 //! `assert-tile-has <statefile> <coord> <color>` fails unless the state holds
 //! that placement.
+//! `dump-registry <statefile>` / `dump-tile <statefile>` print a fetched
+//! state's records for ops inspection (fdev execute get ... --output <file>).
 
 use std::env;
 use std::fs;
@@ -626,7 +628,8 @@ fn main() {
                  gen-seed <outdir> <registry_params> <tile_params> | \
                  merge-fixtures <out_json> | \
                  apply-registry-delta <state> <delta> <out> | \
-                 assert-tile-has <statefile> <coord> <color>"
+                 assert-tile-has <statefile> <coord> <color> | \
+                 dump-registry <statefile> | dump-tile <statefile>"
             );
             exit(2);
         }
