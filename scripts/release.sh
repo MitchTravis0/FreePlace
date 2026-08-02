@@ -74,6 +74,14 @@ echo "== chat id:     $CHAT_ID"
 cargo run -q -p common --example phase5_smoke -- delegate-keys \
   "$DELEGATE_WASM" "$WEBGEN" "$BUILD/identity-delegate-versioned.bin"
 
+# delegate-keys writes a placeholder ghostkeys address (right for the dev
+# node, which has no ghostkeys delegate). A real release bakes in the actual
+# platform delegate address recorded in $PUBLISHED_DIR (derived from the
+# installed delegate WASM: key = blake3(code_hash), code_hash = blake3(wasm)).
+for f in ghostkeys_delegate_key_bytes.json ghostkeys_delegate_code_hash_bytes.json; do
+  [ -f "$PUBLISHED_DIR/$f" ] && cp "$PUBLISHED_DIR/$f" "$WEBGEN/$f"
+done
+
 declare -A TILE_ID
 TILES_JSON="["
 for x in 0 1 2 3; do

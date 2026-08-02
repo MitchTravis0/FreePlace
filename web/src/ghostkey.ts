@@ -46,6 +46,12 @@ export async function proveGhostkey(
     return { kind: "no-identity", detail: `ghostkeys delegate unavailable: ${String(err)}` };
   }
   const access = firstResponse(payloads);
+  if (!access) {
+    // Seen on the real network: the node acks the request with a
+    // DelegateResponse carrying no application messages. Same UI state as an
+    // absent delegate.
+    return { kind: "no-identity", detail: "ghostkeys delegate sent no usable response" };
+  }
   switch (access.variant) {
     case "GhostKeyList":
       break; // access granted to at least one key
@@ -68,6 +74,9 @@ export async function proveGhostkey(
     return { kind: "no-identity", detail: `ghost key signing failed: ${String(err)}` };
   }
   const signed = firstResponse(signPayloads);
+  if (!signed) {
+    return { kind: "no-identity", detail: "ghostkeys delegate sent no usable response" };
+  }
   switch (signed.variant) {
     case "SignResult":
       return {
@@ -86,7 +95,13 @@ export async function proveGhostkey(
   }
 }
 
-function firstResponse(payloads: Uint8Array[]): { variant: string; fields: ReturnType<typeof cborDecode> | null } {
-  if (payloads.length === 0) throw new Error("ghostkeys delegate returned no response");
-  return enumVariant(cborDecode(payloads[0]));
+function firstResponse(
+  payloads: Uint8Array[],
+): { variant: string; fields: ReturnType<typeof cborDecode> | null } | null {
+  if (payloads.length === 0) return null;
+  try {
+    return enumVariant(cborDecode(payloads[0]));
+  } catch {
+    return null;
+  }
 }

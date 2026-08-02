@@ -35,6 +35,7 @@ app.innerHTML = `
       <input data-testid="nickname-edit" maxlength="32" autocomplete="off" />
       <button class="primary" type="submit" data-testid="nickname-save">Save</button>
     </form>
+    <button class="faq-button hidden" data-testid="btn-upgrade" title="admitted by proof of work? a ghost key shortens your cooldown">Use ghost key</button>
     <span class="status-chip" data-testid="activity"></span>
     <span class="cooldown" data-testid="cooldown"></span>
     <button class="faq-button" data-testid="btn-replay">History</button>
@@ -219,6 +220,7 @@ const powStatus = el("pow-status");
 const powProgress = el<HTMLProgressElement>("pow-progress");
 const ghostkeyButton = el<HTMLButtonElement>("btn-ghostkey");
 const ghostkeyStatus = el("ghostkey-status");
+const upgradeButton = el<HTMLButtonElement>("btn-upgrade");
 const nicknameInput = el<HTMLInputElement>("nickname-input");
 const toastEl = el("error-toast");
 const faqEl = el("faq");
@@ -382,6 +384,8 @@ function updateIdentityChip(): void {
   identityChip.textContent = tier
     ? `${displayName(me)} · ${tier === "Ghostkey" ? "ghost key" : "proof of work"}`
     : `${me.slice(0, 8)} · not admitted`;
+  // The upgrade offer only makes sense for an admitted PoW identity.
+  upgradeButton.classList.toggle("hidden", tier !== "Pow");
 }
 
 /// Coordinates in either "(x, y)" or bare "x,y" form; a match only becomes a
@@ -523,6 +527,46 @@ nicknameForm.addEventListener("submit", (event) => {
   }
   nicknameForm.classList.add("hidden");
   backend.setNickname(name).catch((err: unknown) => toast(`nickname update failed: ${String(err)}`));
+});
+
+// Upgrade a PoW-admitted identity to ghost key tier. The registry converges
+// every identity to its earliest admission, so the upgrade record re-admits
+// with a timestamp one below the existing one to win that merge.
+upgradeButton.addEventListener("click", () => {
+  void (async () => {
+    upgradeButton.disabled = true;
+    toast("asking the ghost key delegate");
+    try {
+      const challenge = await backend.admissionChallenge();
+      const outcome = await backend.requestGhostkey(challenge.bytes);
+      switch (outcome.kind) {
+        case "signature": {
+          const current = backend.myAdmittedTs();
+          await backend.admitGhostkey(
+            {
+              scopedPayload: outcome.scopedPayload,
+              signature: outcome.signature,
+              certificatePem: outcome.certificatePem,
+            },
+            null,
+            current !== null ? current - 1 : undefined,
+          );
+          toast("ghost key active: shorter cooldown");
+          break;
+        }
+        case "no-identity":
+          toast(`no ghost key available: ${outcome.detail}`);
+          break;
+        case "access-denied":
+          toast("ghost key request declined");
+          break;
+      }
+    } catch (err) {
+      toast(`ghost key upgrade failed: ${String(err)}`);
+    } finally {
+      upgradeButton.disabled = false;
+    }
+  })();
 });
 
 // ---------------------------------------------------------------------------

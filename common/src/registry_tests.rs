@@ -214,6 +214,52 @@ fn readmission_converges_to_smallest_core_in_both_orders() {
 }
 
 #[test]
+fn ghostkey_upgrade_wins_only_by_predating_the_pow_record() {
+    // The UI's "upgrade with ghost key" re-admits with ts one below the
+    // existing PoW record, because the core converges to the minimum of
+    // (admitted_ts, signature). The nickname rides on the losing record and
+    // must survive the core swap.
+    let signer = key(1);
+    let pow = AdmissionRecord::sign(
+        &signer,
+        &params(),
+        AdmissionProof::Work {
+            nonce: valid_nonce(),
+        },
+        Some(SignedNickname::sign(&signer, &params(), "you", 1)),
+        1000,
+    );
+    let upgrade = |ts| {
+        AdmissionRecord::sign(
+            &signer,
+            &params(),
+            AdmissionProof::Ghostkey {
+                scoped_payload: vec![1, 2, 3],
+                signature: vec![9; 64],
+                certificate_pem: "valid-cert".to_string(),
+            },
+            None,
+            ts,
+        )
+    };
+    for order in [[pow.clone(), upgrade(999)], [upgrade(999), pow.clone()]] {
+        let mut state = RegistryState::default();
+        for r in order {
+            state.insert_record(r);
+        }
+        let stored = state.identities.values().next().unwrap();
+        assert_eq!(stored.tier(), Tier::Ghostkey);
+        assert_eq!(stored.admitted_ts, 999);
+        assert_eq!(stored.nickname.as_ref().unwrap().name, "you");
+    }
+    // A later ghost key admission loses: the identity stays PoW tier.
+    let mut state = RegistryState::default();
+    state.insert_record(pow);
+    state.insert_record(upgrade(1001));
+    assert_eq!(state.identities.values().next().unwrap().tier(), Tier::Pow);
+}
+
+#[test]
 fn nickname_survives_core_conflict_resolution() {
     // The losing (later) record carries the only nickname; it must survive.
     let early = record_from((0, 100, 0));

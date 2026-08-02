@@ -117,6 +117,11 @@ header h1 {
   border-color: #8ab4f8;
 }
 
+/* The ghost key upgrade button only renders for PoW-tier identities. */
+.faq-button.hidden {
+  display: none;
+}
+
 /* Only shown in the narrow layout, where the chat sidebar is an overlay. */
 .chat-toggle {
   display: none;

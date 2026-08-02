@@ -284,6 +284,7 @@ export function decodeChatDelta(bytes: Uint8Array): ChatMessage[] {
 
 export interface RegistryRecord {
   tier: Tier;
+  admittedTs: number;
   nickname: string | null;
   nicknameVersion: number;
 }
@@ -303,8 +304,14 @@ export class RegistryStateJs {
       this.identities.set(authorHex, record);
       return;
     }
-    // Only the key holder can produce competing records; keep the existing
-    // core and take the higher-versioned nickname (mirrors registry.rs).
+    // Mirrors registry.rs: the core converges to the earliest admission (the
+    // Rust side tiebreaks equal ts on signature bytes; competing records only
+    // exist for the key holder's own upgrade flow, which always back-dates by
+    // a full step), and the nickname to the highest version.
+    if (record.admittedTs < existing.admittedTs) {
+      existing.tier = record.tier;
+      existing.admittedTs = record.admittedTs;
+    }
     if (record.nickname !== null && record.nicknameVersion > existing.nicknameVersion) {
       existing.nickname = record.nickname;
       existing.nicknameVersion = record.nicknameVersion;
@@ -324,6 +331,7 @@ function decodeAdmissionRecord(value: CborValue): { authorHex: string; record: R
   const authorHex = hex(asByteArray(mapGet(value, "identity_vk")));
   const proof = enumVariant(mapGet(value, "proof")!);
   const tier: Tier = proof.variant === "Ghostkey" ? "Ghostkey" : "Pow";
+  const admittedTs = asNumber(mapGet(value, "admitted_ts"));
   const nicknameValue = mapGet(value, "nickname");
   let nickname: string | null = null;
   let nicknameVersion = 0;
@@ -331,7 +339,7 @@ function decodeAdmissionRecord(value: CborValue): { authorHex: string; record: R
     nickname = asString(mapGet(nicknameValue, "name"));
     nicknameVersion = asNumber(mapGet(nicknameValue, "version"));
   }
-  return { authorHex, record: { tier, nickname, nicknameVersion } };
+  return { authorHex, record: { tier, admittedTs, nickname, nicknameVersion } };
 }
 
 /// Decode a full RegistryState (CBOR map {identities: {author -> record}}).

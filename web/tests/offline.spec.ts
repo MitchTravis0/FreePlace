@@ -388,6 +388,38 @@ test("chat messages carry timestamps and own-message styling", async ({ page }) 
   expect(errors).toEqual([]);
 });
 
+test("ghost key upgrade flips the tier and keeps the nickname", async ({ page }) => {
+  const errors = watchConsole(page);
+  await page.goto("/?mock=1&admitted=1&ghostkey=yes");
+  await expect(page.getByTestId("conn-status")).toHaveText("connected");
+
+  const chip = page.getByTestId("identity-chip");
+  const upgrade = page.getByTestId("btn-upgrade");
+  await expect(chip).toHaveText("you · proof of work");
+  await expect(upgrade).toBeVisible();
+
+  await upgrade.click();
+  // The upgrade record carries no nickname; the merge must keep "you".
+  await expect(chip).toHaveText("you · ghost key");
+  await expect(upgrade).toBeHidden();
+
+  expect(errors).toEqual([]);
+});
+
+test("ghost key upgrade without a key shows the no-key state and stays PoW", async ({ page }) => {
+  const errors = watchConsole(page);
+  await page.goto("/?mock=1&admitted=1");
+  await expect(page.getByTestId("conn-status")).toHaveText("connected");
+
+  await page.getByTestId("btn-upgrade").click();
+  await expect(page.getByTestId("error-toast")).toContainText("no ghost key available");
+  await expect(page.getByTestId("identity-chip")).toHaveText("you · proof of work");
+  await expect(page.getByTestId("btn-upgrade")).toBeVisible();
+  await expect(page.getByTestId("btn-upgrade")).toBeEnabled();
+
+  expect(errors).toEqual([]);
+});
+
 test("nickname edit updates the chip and chat authorship", async ({ page }) => {
   const errors = watchConsole(page);
   await page.goto("/?mock=1&admitted=1");

@@ -55,10 +55,13 @@ export interface Backend {
   /// Hex of our verifying key; available after start() resolves.
   myAuthorHex(): string;
   myTier(): Tier | null;
+  /// admitted_ts of our registry record, for the ghost key upgrade flow
+  /// (the upgrade record must pre-date it to win the earliest-wins merge).
+  myAdmittedTs(): number | null;
   admissionChallenge(): Promise<{ bytes: Uint8Array; difficultyBits: number }>;
   admitPow(nonce: number, nickname: string | null): Promise<void>;
   requestGhostkey(challenge: Uint8Array): Promise<GhostkeyOutcome>;
-  admitGhostkey(proof: GhostkeyProof, nickname: string | null): Promise<void>;
+  admitGhostkey(proof: GhostkeyProof, nickname: string | null, admittedTs?: number): Promise<void>;
   placePixel(globalX: number, globalY: number, color: number): Promise<void>;
   sendChat(content: string): Promise<void>;
   setNickname(name: string): Promise<void>;
@@ -307,6 +310,10 @@ export class RealBackend implements Backend {
     return this.registry.tierOf(this.myAuthorHex());
   }
 
+  myAdmittedTs(): number | null {
+    return this.registry.identities.get(this.myAuthorHex())?.admittedTs ?? null;
+  }
+
   async admissionChallenge(): Promise<{ bytes: Uint8Array; difficultyBits: number }> {
     return this.identity.admissionChallenge(this.config.registryParams);
   }
@@ -325,11 +332,15 @@ export class RealBackend implements Backend {
     return proveGhostkey(this.client, this.config.ghostkeysDelegate, challenge);
   }
 
-  async admitGhostkey(proof: GhostkeyProof, nickname: string | null): Promise<void> {
+  async admitGhostkey(
+    proof: GhostkeyProof,
+    nickname: string | null,
+    admittedTs?: number,
+  ): Promise<void> {
     const signed = await this.identity.signGhostkeyAdmission(
       this.config.registryParams,
       proof,
-      nowTs(),
+      admittedTs ?? nowTs(),
       nickname,
     );
     await this.sendRegistryDelta(signed.delta);
@@ -474,6 +485,7 @@ export class MockBackend implements Backend {
     if (this.options.admitted) {
       this.registry.insertAdmission(hex(this.myVk), {
         tier: "Pow",
+        admittedTs: nowTs() - 3600,
         nickname: "you",
         nicknameVersion: 1,
       });
@@ -514,10 +526,16 @@ export class MockBackend implements Backend {
       [bob, "bob"],
       [carol, "carol"],
     ] as const) {
-      this.registry.insertAdmission(hex(vk), { tier: "Pow", nickname, nicknameVersion: 1 });
+      this.registry.insertAdmission(hex(vk), {
+        tier: "Pow",
+        admittedTs: nowTs() - 48 * 3600,
+        nickname,
+        nicknameVersion: 1,
+      });
     }
     this.registry.insertAdmission(hex(this.remoteVk), {
       tier: "Ghostkey",
+      admittedTs: nowTs() - 48 * 3600,
       nickname: "eve",
       nicknameVersion: 1,
     });
@@ -583,6 +601,10 @@ export class MockBackend implements Backend {
     return this.registry.tierOf(this.myAuthorHex());
   }
 
+  myAdmittedTs(): number | null {
+    return this.registry.identities.get(this.myAuthorHex())?.admittedTs ?? null;
+  }
+
   async admissionChallenge(): Promise<{ bytes: Uint8Array; difficultyBits: number }> {
     if (this.options.holdPow) {
       await new Promise<void>((resolve) => {
@@ -601,6 +623,7 @@ export class MockBackend implements Backend {
     }
     this.registry.insertAdmission(this.myAuthorHex(), {
       tier: "Pow",
+      admittedTs: nowTs(),
       nickname,
       nicknameVersion: nickname === null ? 0 : 1,
     });
@@ -619,9 +642,14 @@ export class MockBackend implements Backend {
     return { kind: "no-identity", detail: "no ghost key stored; see freenet.org/ghostkey" };
   }
 
-  async admitGhostkey(_proof: GhostkeyProof, nickname: string | null): Promise<void> {
+  async admitGhostkey(
+    _proof: GhostkeyProof,
+    nickname: string | null,
+    admittedTs?: number,
+  ): Promise<void> {
     this.registry.insertAdmission(this.myAuthorHex(), {
       tier: "Ghostkey",
+      admittedTs: admittedTs ?? nowTs(),
       nickname,
       nicknameVersion: nickname === null ? 0 : 1,
     });
