@@ -1,5 +1,5 @@
 // Template overlays (Phase 11): decode a user-supplied image and quantize it
-// to the 16-color palette, one image pixel per board pixel. Local-only by
+// to the palette, one image pixel per board pixel. Local-only by
 // design — nothing is shared through contracts, and the gateway's sandboxed
 // iframe has no web storage, so overlays are session state.
 

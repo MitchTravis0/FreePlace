@@ -17,3 +17,10 @@ description = "pre-AdoptLegacyOrigin delegate: identities rotated with every web
 date = "2026-08-02"
 code_hash = "f829c99c1c617430b6a41603a3d0a0a5006cf7dae99271af70cb119d7da5936f"
 delegate_key = "c382b678ce0da042ae13b0f0fad29041a30013383a8d69a34c3a14e0d5f05610"
+
+[[entry]]
+version = "V3"
+description = "16-color-era delegate: refused SignPlacement colors >= 16; identities under this key are reset one final time (no delegate carry-forward runtime; RegisterDelegateWithPredecessors needs a TS SDK bump)"
+date = "2026-08-02"
+code_hash = "fb9270e43165f34e4e7a26f344b336e6e773404ccd08bd5ffc9537c7f3af68b1"
+delegate_key = "19586393a1cc18016935b3f50b6e92701acf688d17c666e56bbe4343b90651aa"

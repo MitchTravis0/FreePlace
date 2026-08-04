@@ -4,8 +4,9 @@
 
 import { CANVAS_SIZE, EMPTY_PIXEL, TILE_SIZE } from "./state";
 
-/// The 2017 r/place palette; index order matters (contract colors are 0..15).
-export const PALETTE = [
+/// The classic 2017 r/place palette; index order matters (these were the
+/// only contract colors in the 16-color era, so indices 0..15 are frozen).
+export const CLASSIC_PALETTE = [
   "#ffffff",
   "#e4e4e4",
   "#888888",
@@ -24,12 +25,59 @@ export const PALETTE = [
   "#820080",
 ];
 
+/// Extended-palette layout (indices are contract colors; 0xff stays the
+/// EMPTY_PIXEL sentinel, so 255 entries is the ceiling):
+///   0..15    classic palette above (frozen),
+///   16..38   23-step gray ramp, light to dark,
+///   39..254  24 hues x 9 (saturation, lightness) variants, grouped by hue.
+export const GRAY_RAMP_START = 16;
+export const GRAY_RAMP_STEPS = 23;
+export const HUE_START = GRAY_RAMP_START + GRAY_RAMP_STEPS;
+export const HUE_COUNT = 24;
+/// Per-hue (saturation%, lightness%) variants: five vivid lightness steps,
+/// three muted, one desaturated.
+export const HUE_VARIANTS: [number, number][] = [
+  [100, 82],
+  [100, 66],
+  [100, 50],
+  [100, 34],
+  [100, 20],
+  [60, 70],
+  [60, 50],
+  [60, 30],
+  [25, 50],
+];
+
+function hslHex(h: number, s: number, l: number): string {
+  const sat = s / 100;
+  const light = l / 100;
+  const channel = (n: number) => {
+    const k = (n + h / 30) % 12;
+    const a = sat * Math.min(light, 1 - light);
+    const value = light - a * Math.max(-1, Math.min(k - 3, 9 - k, 1));
+    return Math.round(value * 255)
+      .toString(16)
+      .padStart(2, "0");
+  };
+  return `#${channel(0)}${channel(8)}${channel(4)}`;
+}
+
+export const PALETTE = [
+  ...CLASSIC_PALETTE,
+  ...Array.from({ length: GRAY_RAMP_STEPS }, (_, i) => hslHex(0, 0, 96 - i * 4)),
+  ...Array.from({ length: HUE_COUNT }, (_, h) =>
+    HUE_VARIANTS.map(([s, l]) => hslHex(h * (360 / HUE_COUNT), s, l)),
+  ).flat(),
+];
+
 /// Empty pixels render as white, like an unpainted r/place board.
 const EMPTY_RGBA: [number, number, number] = [255, 255, 255];
 
 const MIN_ZOOM = 0.2;
 const MAX_ZOOM = 40;
 const CLICK_SLOP_PX = 4;
+/// Fingers wobble more than mice; a tap must still read as a click.
+const TOUCH_CLICK_SLOP_PX = 12;
 /// How long a remote placement's highlight ring stays visible.
 const RECENT_ARRIVAL_MS = 1200;
 
@@ -51,7 +99,14 @@ export class CanvasView {
   private panX = 0;
   private panY = 0;
   private hover: { x: number; y: number } | null = null;
-  private pointer: { id: number; startX: number; startY: number; moved: boolean } | null = null;
+  /// Active pointers (client coords) keyed by pointerId: one pans or places,
+  /// two pinch-zoom around their midpoint.
+  private pointers = new Map<number, { x: number; y: number }>();
+  /// Where the current gesture's first pointer went down, for click slop.
+  private gestureStart: { x: number; y: number } | null = null;
+  /// True once the gesture panned, pinched, or ever held a second pointer;
+  /// releasing a moved gesture never places a pixel.
+  private gestureMoved = false;
   private drawQueued = false;
   /// Remote placements still showing their fading highlight ring. Overlay
   /// only: the backing store never holds non-palette colors.
@@ -180,37 +235,81 @@ export class CanvasView {
     });
 
     this.canvas.addEventListener("pointerdown", (event) => {
-      this.canvas.setPointerCapture(event.pointerId);
-      this.pointer = { id: event.pointerId, startX: event.clientX, startY: event.clientY, moved: false };
+      // Synthesized (untrusted) pointer events have no capturable pointer.
+      try {
+        this.canvas.setPointerCapture(event.pointerId);
+      } catch {
+        /* test-dispatched events */
+      }
+      if (this.pointers.size === 0) {
+        this.gestureStart = { x: event.clientX, y: event.clientY };
+        this.gestureMoved = false;
+      } else {
+        this.gestureMoved = true;
+      }
+      this.pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
     });
 
     this.canvas.addEventListener("pointermove", (event) => {
       const rect = this.canvas.getBoundingClientRect();
-      this.hover = this.pixelAt(event.clientX - rect.left, event.clientY - rect.top);
-      this.onHover(this.hover);
-      if (this.pointer && this.pointer.id === event.pointerId) {
-        const dx = event.clientX - this.pointer.startX;
-        const dy = event.clientY - this.pointer.startY;
-        if (this.pointer.moved || Math.hypot(dx, dy) > CLICK_SLOP_PX) {
-          this.pointer.moved = true;
+      const prev = this.pointers.get(event.pointerId);
+      if (!prev || this.pointers.size === 1) {
+        this.hover = this.pixelAt(event.clientX - rect.left, event.clientY - rect.top);
+        this.onHover(this.hover);
+      }
+      if (prev && this.pointers.size === 2) {
+        // Pinch: zoom by the inter-pointer distance ratio, keeping the board
+        // point under the old midpoint pinned to the new midpoint (the wheel
+        // path's fixed-point math, plus the midpoint's own drag as pan).
+        const other = [...this.pointers.entries()].find(([id]) => id !== event.pointerId)![1];
+        const oldDist = Math.hypot(prev.x - other.x, prev.y - other.y);
+        const newDist = Math.hypot(event.clientX - other.x, event.clientY - other.y);
+        const factor = oldDist > 0 ? newDist / oldDist : 1;
+        const next = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, this.zoom * factor));
+        const oldMx = (prev.x + other.x) / 2 - rect.left;
+        const oldMy = (prev.y + other.y) / 2 - rect.top;
+        const newMx = (event.clientX + other.x) / 2 - rect.left;
+        const newMy = (event.clientY + other.y) / 2 - rect.top;
+        this.panX = newMx - ((oldMx - this.panX) / this.zoom) * next;
+        this.panY = newMy - ((oldMy - this.panY) / this.zoom) * next;
+        this.zoom = next;
+        this.gestureMoved = true;
+        this.hover = null;
+        this.onHover(null);
+      } else if (prev && this.pointers.size === 1 && this.gestureStart) {
+        const slop = event.pointerType === "touch" ? TOUCH_CLICK_SLOP_PX : CLICK_SLOP_PX;
+        const travel = Math.hypot(
+          event.clientX - this.gestureStart.x,
+          event.clientY - this.gestureStart.y,
+        );
+        if (this.gestureMoved || travel > slop) {
+          this.gestureMoved = true;
           if (this.dragPlace) {
             if (this.hover) this.onDragPlace(this.hover.x, this.hover.y);
           } else {
-            this.panX += event.movementX;
-            this.panY += event.movementY;
+            // Deltas from the tracked position, not movementX/Y (which some
+            // mobile browsers report as 0 for touch-derived pointer events).
+            this.panX += event.clientX - prev.x;
+            this.panY += event.clientY - prev.y;
           }
         }
       }
+      if (prev) this.pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
       this.requestDraw();
     });
 
     this.canvas.addEventListener("pointerup", (event) => {
-      const pointer = this.pointer;
-      this.pointer = null;
-      if (!pointer || pointer.id !== event.pointerId || pointer.moved) return;
+      if (!this.pointers.delete(event.pointerId)) return;
+      if (this.pointers.size > 0 || this.gestureMoved) return;
       const rect = this.canvas.getBoundingClientRect();
       const pixel = this.pixelAt(event.clientX - rect.left, event.clientY - rect.top);
       if (pixel) (this.dragPlace ? this.onDragPlace : this.onPlace)(pixel.x, pixel.y);
+    });
+
+    this.canvas.addEventListener("pointercancel", (event) => {
+      // A cancelled pointer must never place; the gesture stays "moved"
+      // until every remaining pointer lifts.
+      if (this.pointers.delete(event.pointerId)) this.gestureMoved = true;
     });
 
     this.canvas.addEventListener("pointerleave", () => {

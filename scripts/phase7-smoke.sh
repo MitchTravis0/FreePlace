@@ -75,10 +75,13 @@ fi
 echo "(expected failure observed)"
 
 echo "=== registering the outgoing hash makes the preflight pass"
+# The version must be the next unused generation: the real registry grows an
+# entry per shipped re-key, and duplicates fail the freenet-migrate codegen.
+NEXT_GEN=$(($(grep -c '^\[\[entry\]\]' "$TILE_TOML") + 1))
 cat >> "$TILE_TOML" <<EOF
 
 [[entry]]
-version = "V1"
+version = "V$NEXT_GEN"
 description = "phase 7 smoke: deliberate re-key exercise"
 date = "$(date +%F)"
 code_hash = "$TILE_HASH_A"

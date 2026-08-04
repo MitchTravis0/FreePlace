@@ -13,3 +13,15 @@ version = "V1"
 description = "pre-baked-layer tile: pixels vanished once an author's 9th placement evicted their 1st; TileState gained the baked layer (MAX_BAKED_PER_AUTHOR)"
 date = "2026-08-02"
 code_hash = "d87f78779742d9ec33d4502706cb927552df113807125ea502cebe93840b81a2"
+
+[[entry]]
+version = "V2"
+description = "16-color-era tile: PALETTE_COLORS 16 -> 255 and MAX_BAKED_PER_AUTHOR 256 -> 1024 (both WASM-enforced bounds); placements signed under this generation stay valid, colors 0..15 keep their meaning"
+date = "2026-08-02"
+code_hash = "83b6796accea15b7b0527cdbb6419e59034129010060612a30c9ee40e9932189"
+
+[[entry]]
+version = "V3"
+description = "1024-baked-cap tile: MAX_BAKED_PER_AUTHOR 1024 -> 65536 = TILE_AREA (WASM-enforced bound only) after hardcore painters hit the 1024 wall; wire format and signing preimages unchanged, placements signed under this generation stay valid"
+date = "2026-08-03"
+code_hash = "64b19152fb61a77969eb2210ca16f590db313a97179fb255b150fb8138c6d782"

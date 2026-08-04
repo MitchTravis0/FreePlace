@@ -107,7 +107,7 @@ fn legacy_delegate_lineage_matches_the_registry() {
     // and fails the build on mismatch; this pins the emitted contents so the
     // registry file cannot silently lose or reorder entries.
     let lineage = crate::legacy::LEGACY_IDENTITY_DELEGATES;
-    assert_eq!(lineage.len(), 2);
+    assert_eq!(lineage.len(), 3);
     let (delegate_key, code_hash) = lineage[0];
     assert_eq!(
         hex::encode(code_hash),
@@ -125,5 +125,14 @@ fn legacy_delegate_lineage_matches_the_registry() {
     assert_eq!(
         hex::encode(delegate_key),
         "c382b678ce0da042ae13b0f0fad29041a30013383a8d69a34c3a14e0d5f05610"
+    );
+    let (delegate_key, code_hash) = lineage[2];
+    assert_eq!(
+        hex::encode(code_hash),
+        "fb9270e43165f34e4e7a26f344b336e6e773404ccd08bd5ffc9537c7f3af68b1"
+    );
+    assert_eq!(
+        hex::encode(delegate_key),
+        "19586393a1cc18016935b3f50b6e92701acf688d17c666e56bbe4343b90651aa"
     );
 }

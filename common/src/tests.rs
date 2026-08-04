@@ -501,7 +501,13 @@ fn placement_bound_to_registry() {
 
 #[test]
 fn out_of_palette_color_fails_even_correctly_signed() {
-    let p = SignedPlacement::sign(&key(1), &params(), 0, 200, 1000);
+    let p = SignedPlacement::sign(
+        &key(1),
+        &params(),
+        0,
+        crate::constants::PALETTE_COLORS,
+        1000,
+    );
     assert!(p.verify(&params()).is_err());
 }
 

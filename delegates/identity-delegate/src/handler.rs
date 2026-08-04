@@ -60,6 +60,9 @@ fn try_handle(key: &SigningKey, request: IdentityRequest) -> Result<IdentityResp
             ts,
         } => {
             let params: TileParameters = common::from_cbor(&tile_params)?;
+            // PALETTE_COLORS is currently u8::MAX; keep the >= bound so a
+            // future cap change stays correct (see common/src/tile.rs).
+            #[allow(clippy::absurd_extreme_comparisons)]
             if color >= constants::PALETTE_COLORS {
                 return Err(format!("color {color} out of palette range"));
             }

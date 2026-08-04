@@ -88,6 +88,9 @@ impl SignedPlacement {
 
     /// Verify the signature and field bounds against this tile's parameters.
     pub fn verify(&self, params: &TileParameters) -> Result<(), String> {
+        // PALETTE_COLORS is currently u8::MAX, but the bound is "< the cap",
+        // not "!= the sentinel"; keep >= so a future cap change stays correct.
+        #[allow(clippy::absurd_extreme_comparisons)]
         if self.color >= PALETTE_COLORS {
             return Err(format!("color {} out of palette range", self.color));
         }

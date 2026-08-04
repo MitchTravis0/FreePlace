@@ -14,7 +14,10 @@ pub const TILES_PER_SIDE: u8 = 4;
 pub const CANVAS_SIZE: u32 = TILE_SIZE as u32 * TILES_PER_SIDE as u32;
 
 /// Number of palette colors; valid color values are 0..PALETTE_COLORS.
-pub const PALETTE_COLORS: u8 = 16;
+/// 255 is the ceiling, not 256: 0xff is the EMPTY_PIXEL sentinel in derived
+/// canvases. Indices 0..15 are the original 2017 r/place palette, so pixels
+/// placed under the 16-color era keep their colors.
+pub const PALETTE_COLORS: u8 = 255;
 
 /// Sentinel in a derived canvas for "no valid placement at this coordinate".
 pub const EMPTY_PIXEL: u8 = 0xff;
@@ -24,8 +27,17 @@ pub const MAX_PLACEMENTS_PER_AUTHOR: usize = 8;
 
 /// Per-author cap on the baked layer: placements evicted from the live log are
 /// baked (kept newest-first) so canvas pixels survive past the live cap, while
-/// one identity's permanent footprint per tile stays bounded.
-pub const MAX_BAKED_PER_AUTHOR: usize = 256;
+/// one identity's permanent footprint per tile stays bounded. Raised 256 ->
+/// 1024 (2026-08-02) after the 2s cooldown retune shrank the fade horizon to
+/// ~8.8 min, then 1024 -> 65536 (2026-08-03) after hardcore painters hit the
+/// 1024 wall. 65536 = TILE_AREA, the usefulness ceiling: an author can never
+/// have more visible pixels in a tile than the tile has coordinates, so a
+/// bigger cap could only retain invisible history. Costs accepted: ~7.2 MiB
+/// worst-case per author per tile, so ~7 max-footprint authors reach the
+/// 50 MiB tile cap (identities are PoW-priced; the cap was already a weak
+/// flood deterrent at any value), and the fade horizon becomes ~36 h of
+/// nonstop single-tile painting at ghost tier (~15 d PoW).
+pub const MAX_BAKED_PER_AUTHOR: usize = 65536;
 
 /// Per-tile cooldown for PoW-admitted identities, in seconds.
 pub const POW_TILE_COOLDOWN_SECS: u64 = 20;

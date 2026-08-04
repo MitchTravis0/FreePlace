@@ -5,7 +5,8 @@
 
 import "./style.css";
 import { Backend, createBackend, tileIndex } from "./backend";
-import { CanvasView, PALETTE, paletteRgb } from "./canvas";
+import { CanvasView, CLASSIC_PALETTE, PALETTE, paletteRgb } from "./canvas";
+import { createPicker } from "./picker";
 import { loadOverlayImage, OverlayImage } from "./overlay";
 import type { PowWorkerMessage } from "./pow-worker";
 // Inline (blob URL) worker: the gateway's sandboxed iframe has an opaque
@@ -54,6 +55,7 @@ app.innerHTML = `
       <div class="pixel-tooltip hidden" data-testid="pixel-tooltip"></div>
       <span class="coords-chip" data-testid="coords"></span>
       <div class="palette" data-testid="palette"></div>
+      <div class="picker-panel hidden" data-testid="picker-panel"></div>
       <div class="template-panel" data-testid="overlay-panel">
         <button class="panel-toggle" data-testid="btn-overlay-toggle">Template</button>
         <div class="panel-body hidden" data-testid="overlay-body">
@@ -278,19 +280,46 @@ function toast(message: string): void {
 // Palette
 // ---------------------------------------------------------------------------
 
-PALETTE.forEach((color, index) => {
+// The bar keeps the classic 16 as quick swatches; every other palette color
+// is reached through the wheel picker.
+CLASSIC_PALETTE.forEach((color, index) => {
   const swatch = document.createElement("button");
   swatch.style.background = color;
   swatch.dataset.color = String(index);
   swatch.title = `color ${index}`;
-  if (index === selectedColor) swatch.classList.add("selected");
-  swatch.addEventListener("click", () => {
-    selectedColor = index;
-    paletteEl.querySelectorAll("button").forEach((b) => b.classList.remove("selected"));
-    swatch.classList.add("selected");
-  });
+  swatch.addEventListener("click", () => selectColor(index));
   paletteEl.appendChild(swatch);
 });
+
+const pickerPanel = el("picker-panel");
+const pickerToggle = document.createElement("button");
+pickerToggle.className = "picker-toggle";
+pickerToggle.dataset.testid = "btn-picker";
+pickerToggle.title = "current color — click for more colors";
+// Rainbow ring around the current color, so it reads as "the color wheel
+// lives here", not as a 17th swatch.
+const pickerCurrent = document.createElement("span");
+pickerCurrent.className = "picker-current";
+pickerCurrent.dataset.testid = "picker-current";
+pickerToggle.appendChild(pickerCurrent);
+pickerToggle.addEventListener("click", () => pickerPanel.classList.toggle("hidden"));
+paletteEl.appendChild(pickerToggle);
+
+const picker = createPicker(pickerPanel, selectColor);
+
+function selectColor(index: number): void {
+  selectedColor = index;
+  for (const button of paletteEl.querySelectorAll("button[data-color]")) {
+    button.classList.toggle("selected", Number((button as HTMLElement).dataset.color) === index);
+  }
+  pickerCurrent.style.background = PALETTE[index];
+  // The white selected ring moves to the toggle when the current color has
+  // no swatch in the classic bar.
+  pickerToggle.classList.toggle("selected", index >= CLASSIC_PALETTE.length);
+  picker.setSelected(index);
+}
+
+selectColor(selectedColor);
 
 // ---------------------------------------------------------------------------
 // Backend wiring
@@ -1046,6 +1075,7 @@ if (!isMock && __REGISTRY_CONTRACT_ID__ === "") {
     return color === EMPTY_PIXEL ? null : color;
   },
   cooldownRemainingMs: () => Math.max(0, cooldownUntil - Date.now()),
+  selectedColor: () => selectedColor,
   winnerAt: (x: number, y: number): { author: string; ts: number } | null => {
     const winner = winnerAt(x, y);
     return winner ? { author: hex(winner.author), ts: winner.ts } : null;

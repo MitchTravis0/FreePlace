@@ -76,11 +76,15 @@ test("palette targets are at least 44px and selectable", async ({ page }) => {
   await page.goto("/?mock=1&admitted=1");
   await expect(page.getByTestId("conn-status")).toHaveText("connected");
 
-  const buttons = page.getByTestId("palette").locator("button");
+  // 16 classic swatches plus the wheel-picker toggle, all >= 44px targets.
+  const buttons = page.getByTestId("palette").locator("button[data-color]");
   await expect(buttons).toHaveCount(16);
   const first = (await buttons.first().boundingBox())!;
   expect(first.width).toBeGreaterThanOrEqual(44);
   expect(first.height).toBeGreaterThanOrEqual(44);
+  const toggle = (await page.getByTestId("btn-picker").boundingBox())!;
+  expect(toggle.width).toBeGreaterThanOrEqual(44);
+  expect(toggle.height).toBeGreaterThanOrEqual(44);
 
   // The strip scrolls horizontally instead of overflowing the page.
   const palette = (await page.getByTestId("palette").boundingBox())!;
@@ -90,6 +94,21 @@ test("palette targets are at least 44px and selectable", async ({ page }) => {
   await expect(buttons.nth(15)).toHaveClass(/selected/);
 
   await assertNoHorizontalScroll(page);
+  expect(errors).toEqual([]);
+});
+
+test("the color picker fits a 390px viewport", async ({ page }) => {
+  const errors = watchConsole(page);
+  await page.goto("/?mock=1&admitted=1");
+  await expect(page.getByTestId("conn-status")).toHaveText("connected");
+
+  await page.getByTestId("btn-picker").scrollIntoViewIfNeeded();
+  await page.getByTestId("btn-picker").click();
+  const panel = (await page.getByTestId("picker-panel").boundingBox())!;
+  expect(panel.x).toBeGreaterThanOrEqual(0);
+  expect(panel.x + panel.width).toBeLessThanOrEqual(390);
+  await assertNoHorizontalScroll(page);
+
   expect(errors).toEqual([]);
 });
 

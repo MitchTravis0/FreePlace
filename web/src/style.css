@@ -203,6 +203,110 @@ header h1 {
   border-color: #ffffff;
 }
 
+/* Extended-palette picker: wheel + shades + grays + hex, above the bar.
+   The toggle is a rainbow ring holding the current color, set apart from
+   the classic swatches so it reads as the wheel, not a 17th color. */
+.palette button.picker-toggle {
+  width: 26px;
+  height: 26px;
+  margin-left: 8px;
+  padding: 4px;
+  border: none;
+  border-radius: 50%;
+  background: conic-gradient(#f00, #ff0, #0f0, #0ff, #00f, #f0f, #f00);
+  cursor: pointer;
+}
+
+.palette button.picker-toggle.selected {
+  outline: 2px solid #ffffff;
+  outline-offset: 1px;
+}
+
+.picker-toggle .picker-current {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  border: 1px solid rgba(0, 0, 0, 0.45);
+}
+
+.picker-panel.hidden {
+  display: none;
+}
+
+.picker-panel {
+  position: absolute;
+  bottom: 56px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 4;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 10px;
+  max-width: calc(100vw - 24px);
+  background: rgba(20, 20, 26, 0.95);
+  border: 1px solid #2c2c34;
+  border-radius: 8px;
+}
+
+.picker-shades,
+.picker-grays {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 4px;
+}
+
+/* One unbroken row of the 9 shades; it also sets the panel's width so the
+   gray ramp below wraps evenly instead of orphaning a swatch. */
+.picker-shades {
+  flex-wrap: nowrap;
+}
+
+.picker-shades button,
+.picker-grays button {
+  border: 2px solid transparent;
+  border-radius: 4px;
+  padding: 0;
+  cursor: pointer;
+}
+
+.picker-shades button {
+  width: 30px;
+  height: 30px;
+}
+
+.picker-grays button {
+  width: 16px;
+  height: 16px;
+}
+
+.picker-shades button.selected,
+.picker-grays button.selected {
+  border-color: #ffffff;
+}
+
+.picker-hex-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #9a9aa6;
+  font-size: 12px;
+}
+
+.picker-hex-row input {
+  width: 90px;
+  padding: 4px 6px;
+  background: #101014;
+  color: #e8e8ee;
+  border: 1px solid #2c2c34;
+  border-radius: 4px;
+  font-family: inherit;
+  font-size: 12px;
+}
+
 /* Replay bar (Phase 12): banner + play/pause + scrubber over the board. */
 .replay-bar {
   position: absolute;
@@ -632,9 +736,19 @@ button.primary:disabled {
     flex: 0 0 auto;
   }
 
+  .palette button.picker-toggle {
+    width: 44px;
+    height: 44px;
+  }
+
   /* Keep the coordinate readout clear of the (now near full-width) palette. */
   .coords-chip {
     bottom: 76px;
+  }
+
+  /* The 44px palette bar is taller here; keep the picker clear of it. */
+  .picker-panel {
+    bottom: 84px;
   }
 
   .onboarding-card {

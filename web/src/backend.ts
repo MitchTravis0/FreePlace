@@ -95,6 +95,10 @@ const SYNC_GET_ATTEMPTS = 3;
 // Tiles that still fail after that keep retrying in the background so one
 // cold tile never blocks the whole app.
 const SYNC_RETRY_INTERVAL_MS = 10_000;
+/// Steady-state re-pull of all subscribed contracts (see
+/// scheduleStateRefresh); bounds how stale a viewer can be when updates
+/// arrive at the node without a subscription notification.
+const STATE_REFRESH_INTERVAL_MS = 60_000;
 
 /// GET with a per-attempt hard timeout and retries; null when every attempt
 /// failed. Mis-routed responses (checkResponseKey) and stalls both land in
@@ -193,6 +197,14 @@ export async function updateOrPut(
       UPDATE_ATTEMPT_TIMEOUT_MS,
       "contract put",
     );
+    if (!caches.putFirst.has(keyHex)) {
+      // A PUT lands but does not broadcast to remote subscribers, so peers
+      // see this write only via the periodic heal — worth a field record.
+      console.info(
+        `freeplace update: ${keyHex.slice(0, 8)} UPDATE failed, using PUT fallback ` +
+          "(off the update mesh; remote peers rely on the background heal)",
+      );
+    }
     caches.putFirst.add(keyHex);
   };
   if (caches.putFirst.has(keyHex)) {
@@ -269,6 +281,7 @@ export class RealBackend implements Backend {
   private pendingTiles: TileConfig[] = [];
   private syncRetryTimer: number | null = null;
   private disposed = false;
+  private refreshTimer: number | null = null;
   /// instance-id hex -> route for subscription notifications.
   private routes = new Map<
     string,
@@ -326,6 +339,52 @@ export class RealBackend implements Backend {
     this.myVk = await this.identity.adoptOrGetIdentity(this.config.legacyIds.webapps ?? []);
     await this.syncAll();
     this.events.onConnection("connected");
+    void this.processLegacyProbes();
+    this.scheduleStateRefresh();
+  }
+
+  /// Subscription notifications do not fire for node-side background heals,
+  /// and peers whose writes ride the PUT fallback (off the update mesh,
+  /// freenet-core#5069 — every placement on a fresh tile instance) never
+  /// broadcast at all. Re-pulling every subscribed contract from the local
+  /// node on a slow timer bounds viewer staleness at the refresh interval
+  /// where it was previously unbounded; GETs of subscribed contracts answer
+  /// from local node state in ~60 ms, so the steady-state cost is trivial.
+  private scheduleStateRefresh(): void {
+    if (this.disposed || this.refreshTimer !== null) return;
+    this.refreshTimer = window.setTimeout(() => {
+      this.refreshTimer = null;
+      void this.refreshAll().finally(() => this.scheduleStateRefresh());
+    }, STATE_REFRESH_INTERVAL_MS);
+  }
+
+  private async refreshAll(): Promise<void> {
+    if (this.disposed) return;
+    const registryBytes = await getWithRetry(this.client, this.key("registry"), "registry refresh", 1);
+    if (registryBytes !== null) {
+      for (const [author, record] of decodeRegistryState(registryBytes).identities) {
+        this.registry.insertAdmission(author, record);
+      }
+      this.events.onRegistry();
+    }
+    const chatBytes = await getWithRetry(this.client, this.key("chat"), "chat refresh", 1);
+    if (chatBytes !== null) {
+      for (const message of decodeChatState(chatBytes).messages.values()) this.chat.insert(message);
+      this.events.onChat();
+    }
+    for (const tile of this.config.tiles) {
+      if (this.disposed) return;
+      const bytes = await getWithRetry(
+        this.client,
+        this.key("tile", tile),
+        `tile(${tile.x},${tile.y}) refresh`,
+        1,
+      );
+      if (bytes !== null) {
+        mergeTileInto(this.tiles[tileIndex(tile.x, tile.y)], decodeTileState(bytes));
+        this.events.onTile(tile.x, tile.y);
+      }
+    }
   }
 
   /// Registration is idempotent node-side and skipped after the first
@@ -362,44 +421,76 @@ export class RealBackend implements Backend {
     return contractKeyFromId(id);
   }
 
+  /// Legacy fold work queued off the connect critical path, keyed by label.
+  private legacyProbes = new Map<
+    string,
+    {
+      key: ContractKey;
+      legacyIds: string[];
+      isEmpty: (bytes: Uint8Array) => boolean;
+      apply: (bytes: Uint8Array) => void;
+    }
+  >();
+  private probing = false;
+
   /// Fetch a contract's state; when the current instance is still empty and a
-  /// previous release's instance holds state, the backward migration probe
-  /// carries it forward first (upgrade-and-migration.md): GET the newest
-  /// legacy instance, fold its bytes into the current key with a full-state
-  /// update (the contract re-validates every byte), and use them locally.
-  /// Gated on "destination empty" so a stale source never clobbers newer
-  /// data; merge semantics make re-runs idempotent; the legacy instance is
-  /// left untouched.
+  /// previous release's instance holds state, QUEUE the backward migration
+  /// probe (upgrade-and-migration.md) instead of running it inline: a fold is
+  /// a network write that can take 20 s+ per instance on the real network, and
+  /// 16 inline folds kept conn-status at "connecting" for minutes (found live
+  /// 2026-08-02, first tile re-key release). The queue drains after
+  /// "connected"; a successful fold applies the carried bytes via `apply`.
   private async getStateWithLegacyProbe(
     label: string,
     key: ContractKey,
     legacyIds: string[],
     isEmpty: (bytes: Uint8Array) => boolean,
+    apply: (bytes: Uint8Array) => void,
     attempts?: number,
   ): Promise<Uint8Array | null> {
     const current = await getWithRetry(this.client, key, label, attempts);
     if (current === null) return null;
     if (!isEmpty(current) || legacyIds.length === 0) return current;
-    for (const legacyId of legacyIds) {
-      try {
-        const old = await withTimeout(
-          this.client.getState(contractKeyFromId(legacyId)),
-          SYNC_GET_TIMEOUT_MS,
-          `legacy ${label} fetch`,
-        );
-        if (isEmpty(old)) continue;
-        await withTimeout(
-          this.client.updateWithState(key, old),
-          UPDATE_ATTEMPT_TIMEOUT_MS,
-          `${label} fold-forward`,
-        );
-        console.info(`freeplace migration: carried ${label} state forward from ${legacyId}`);
-        return old;
-      } catch (err) {
-        console.info(`freeplace migration: legacy ${label} ${legacyId} unreachable: ${err}`);
-      }
-    }
+    if (!this.legacyProbes.has(label)) this.legacyProbes.set(label, { key, legacyIds, isEmpty, apply });
     return current;
+  }
+
+  /// One probe pass per connect, sequential (each fold is an expensive
+  /// network write): GET the newest legacy instance, fold its bytes into the
+  /// current key with a full-state update (the contract re-validates every
+  /// byte), and apply them locally. Gated on "destination empty" at queue
+  /// time so a stale source never clobbers newer data; merge semantics make
+  /// re-runs idempotent; the legacy instance is left untouched.
+  private async processLegacyProbes(): Promise<void> {
+    if (this.probing) return;
+    this.probing = true;
+    try {
+      for (const [label, probe] of [...this.legacyProbes]) {
+        this.legacyProbes.delete(label);
+        for (const legacyId of probe.legacyIds) {
+          try {
+            const old = await withTimeout(
+              this.client.getState(contractKeyFromId(legacyId)),
+              SYNC_GET_TIMEOUT_MS,
+              `legacy ${label} fetch`,
+            );
+            if (probe.isEmpty(old)) continue;
+            await withTimeout(
+              this.client.updateWithState(probe.key, old),
+              UPDATE_ATTEMPT_TIMEOUT_MS,
+              `${label} fold-forward`,
+            );
+            console.info(`freeplace migration: carried ${label} state forward from ${legacyId}`);
+            probe.apply(old);
+            break;
+          } catch (err) {
+            console.info(`freeplace migration: legacy ${label} ${legacyId} unreachable: ${err}`);
+          }
+        }
+      }
+    } finally {
+      this.probing = false;
+    }
   }
 
   /// One cold tile must never block the app: registry failure is fatal (the
@@ -415,6 +506,12 @@ export class RealBackend implements Backend {
       registryKey,
       legacy.registry,
       (bytes) => decodeRegistryState(bytes).identities.size === 0,
+      (bytes) => {
+        for (const [author, record] of decodeRegistryState(bytes).identities) {
+          this.registry.insertAdmission(author, record);
+        }
+        this.events.onRegistry();
+      },
     );
     if (registryBytes === null) throw new Error("registry unreachable (all attempts timed out)");
     this.registry = decodeRegistryState(registryBytes);
@@ -442,6 +539,10 @@ export class RealBackend implements Backend {
       chatKey,
       this.config.legacyIds.chat,
       (b) => decodeChatState(b).messages.size === 0,
+      (b) => {
+        for (const message of decodeChatState(b).messages.values()) this.chat.insert(message);
+        this.events.onChat();
+      },
       attempts,
     );
     if (bytes === null) return false;
@@ -467,6 +568,10 @@ export class RealBackend implements Backend {
       tileKey,
       legacyTileIds,
       (b) => decodeTileState(b).placements.size === 0,
+      (b) => {
+        mergeTileInto(this.tiles[tileIndex(tile.x, tile.y)], decodeTileState(b));
+        this.events.onTile(tile.x, tile.y);
+      },
       attempts,
     );
     if (bytes === null) return false;
