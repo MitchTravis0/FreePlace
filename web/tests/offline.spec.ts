@@ -200,6 +200,9 @@ test("onboarding: disclosure, nickname, and ghost key admission", async ({ page 
   await expect(disclosure).toContainText("mint is centralized");
   await expect(disclosure).toContainText("proof-of-work path is always sufficient");
 
+  // A vault that holds a usable key gets no purchase pitch.
+  await expect(page.getByTestId("ghostkey-buy")).toBeHidden();
+
   await page.getByTestId("nickname-input").fill("tester");
   await page.getByTestId("btn-ghostkey").click();
   await expect(page.getByTestId("ghostkey-status")).toContainText("asking the ghost key delegate");
@@ -716,6 +719,28 @@ test("placement is refused while replaying", async ({ page }) => {
   await expect
     .poll(() => page.evaluate(() => window.__freeplace.pixel(200, 100)))
     .toBe(5);
+
+  expect(errors).toEqual([]);
+});
+
+test("onboarding offers the purchase path up front when the vault has no ghost key", async ({
+  page,
+}) => {
+  const errors = watchConsole(page);
+  await page.goto("/?mock=1&holdpow=1");
+  await expect(page.getByTestId("conn-status")).toHaveText("connected");
+  await expect(page.getByTestId("onboarding")).toBeVisible();
+
+  // The HasIdentity probe reports an empty vault: the purchase link shows up
+  // front, and the button stays usable — the probe decides what to offer,
+  // never whether the user may attempt (a key bought in another tab must
+  // still work on the next click).
+  await expect(page.getByTestId("ghostkey-buy")).toBeVisible();
+  await expect(page.getByTestId("ghostkey-buy-link")).toHaveAttribute(
+    "href",
+    /freenet\.org\/ghostkey\/create\//,
+  );
+  await expect(page.getByTestId("btn-ghostkey")).toBeEnabled();
 
   expect(errors).toEqual([]);
 });

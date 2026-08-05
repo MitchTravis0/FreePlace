@@ -8,7 +8,12 @@ import { ContractContainer, ContractKey } from "@freenetorg/freenet-stdlib";
 import { base64ToBytes, registerDelegate } from "./delegate-api";
 import { IDENTITY_DELEGATE_WASM_B64 } from "./delegate-wasm";
 import { contractKeyFromId, FreenetClient } from "./freenet-api";
-import { GhostkeyOutcome, proveGhostkey } from "./ghostkey";
+import {
+  GhostkeyOutcome,
+  GhostkeyPresence,
+  ghostkeyPresence as probeGhostkeyPresence,
+  proveGhostkey,
+} from "./ghostkey";
 import { IdentityClient } from "./identity";
 import { mergeChatState, mergeRegistryState, mergeTileState } from "./merge";
 import { leadingZeroBits, powDigest } from "./pow";
@@ -64,6 +69,10 @@ export interface Backend {
   admissionChallenge(): Promise<{ bytes: Uint8Array; difficultyBits: number }>;
   admitPow(nonce: number, nickname: string | null): Promise<void>;
   requestGhostkey(challenge: Uint8Array): Promise<GhostkeyOutcome>;
+  /// HasIdentity probe (never prompts): does the user's vault hold any ghost
+  /// keys? null when unknowable (no delegate on this node). Offer-only
+  /// signal — must never gate requestGhostkey.
+  ghostkeyPresence(): Promise<GhostkeyPresence | null>;
   admitGhostkey(proof: GhostkeyProof, nickname: string | null, admittedTs?: number): Promise<void>;
   placePixel(globalX: number, globalY: number, color: number): Promise<void>;
   sendChat(content: string): Promise<void>;
@@ -676,6 +685,10 @@ export class RealBackend implements Backend {
     return proveGhostkey(this.client, this.config.ghostkeysDelegate, challenge);
   }
 
+  async ghostkeyPresence(): Promise<GhostkeyPresence | null> {
+    return probeGhostkeyPresence(this.client, this.config.ghostkeysDelegate);
+  }
+
   async admitGhostkey(
     proof: GhostkeyProof,
     nickname: string | null,
@@ -998,6 +1011,10 @@ export class MockBackend implements Backend {
       };
     }
     return { kind: "no-identity", detail: "no ghost key stored; see freenet.org/ghostkey" };
+  }
+
+  async ghostkeyPresence(): Promise<GhostkeyPresence | null> {
+    return this.options.ghostkeySucceeds ? { usable: 1, unusable: 0 } : { usable: 0, unusable: 0 };
   }
 
   async admitGhostkey(

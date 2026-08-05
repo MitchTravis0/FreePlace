@@ -5,6 +5,7 @@
 
 import "./style.css";
 import { Backend, createBackend, tileIndex } from "./backend";
+import { ghostkeyCreateUrl } from "./ghostkey";
 import { CanvasView, CLASSIC_PALETTE, PALETTE, paletteRgb } from "./canvas";
 import { createPicker } from "./picker";
 import { loadOverlayImage, OverlayImage } from "./overlay";
@@ -136,6 +137,11 @@ app.innerHTML = `
         <p class="muted">Skip the wait and get a faster pixel cooldown.</p>
         <button class="primary" data-testid="btn-ghostkey">Use a ghost key</button>
         <p class="muted" data-testid="ghostkey-status"></p>
+        <p class="muted ghostkey-buy hidden" data-testid="ghostkey-buy">
+          No ghost key in your vault yet &mdash; buy one at
+          <a data-testid="ghostkey-buy-link" target="_blank" rel="noopener noreferrer">freenet.org/ghostkey</a>
+          and the vault will offer a way back here once it lands.
+        </p>
         <p class="disclosure" data-testid="ghostkey-disclosure">
           Ghost keys cost money; the money funds Freenet, and the mint is
           centralized. The free proof-of-work path is always sufficient for
@@ -229,6 +235,8 @@ const powStatus = el("pow-status");
 const powProgress = el<HTMLProgressElement>("pow-progress");
 const ghostkeyButton = el<HTMLButtonElement>("btn-ghostkey");
 const ghostkeyStatus = el("ghostkey-status");
+const ghostkeyBuy = el("ghostkey-buy");
+const ghostkeyBuyLink = el<HTMLAnchorElement>("ghostkey-buy-link");
 const upgradeButton = el<HTMLButtonElement>("btn-upgrade");
 const nicknameInput = el<HTMLInputElement>("nickname-input");
 const toastEl = el("error-toast");
@@ -958,8 +966,29 @@ function nickname(): string | null {
   return name.length > 0 ? name : null;
 }
 
+function showGhostkeyBuy(): void {
+  ghostkeyBuyLink.href = ghostkeyCreateUrl();
+  ghostkeyBuy.classList.remove("hidden");
+}
+
 async function startAdmission(): Promise<void> {
   const challengePromise = backend.admissionChallenge();
+
+  // HasIdentity probe (never prompts): decides what to OFFER — the purchase
+  // link up front, or a restore-your-backup hint — never whether the click
+  // may attempt (the answer goes stale when a key is bought in another tab,
+  // and the vault cannot call back; SignWithDefault is authoritative).
+  void backend.ghostkeyPresence().then((presence) => {
+    if (!presence || presence.usable > 0) return;
+    if (presence.unusable > 0) {
+      if (ghostkeyStatus.textContent === "") {
+        ghostkeyStatus.textContent =
+          "a ghost key certificate is present but its signing key is missing; restore your vault backup";
+      }
+    } else {
+      showGhostkeyBuy();
+    }
+  });
 
   // Ghost key offer is live from the start, so its (possible) delegate
   // timeout overlaps the grind instead of adding to it.
@@ -985,6 +1014,7 @@ async function startAdmission(): Promise<void> {
           case "no-identity":
             ghostkeyStatus.textContent = `no ghost key available: ${outcome.detail}`;
             ghostkeyButton.disabled = false;
+            showGhostkeyBuy();
             break;
           case "access-denied":
             ghostkeyStatus.textContent = "request declined";

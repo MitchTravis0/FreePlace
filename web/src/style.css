@@ -586,8 +586,13 @@ button.primary:disabled {
 .overlay.hidden,
 .toast.hidden,
 .banner.hidden,
-.pixel-tooltip.hidden {
+.pixel-tooltip.hidden,
+.ghostkey-buy.hidden {
   display: none;
+}
+
+.ghostkey-buy a {
+  color: #8ab4f8;
 }
 
 .pixel-tooltip {
